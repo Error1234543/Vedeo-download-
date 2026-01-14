@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import aiohttp
@@ -7,27 +6,32 @@ from pyrogram.types import Message
 from flask import Flask
 import threading
 from yt_dlp import YoutubeDL
-from datetime import datetime
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 STREAM_API = "https://anonymouspwplayerr-c96de7802811.herokuapp.com/pw"
 
-bot = Client("pw-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client(
+    "pw-bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
 user_data = {}
 
-# ---------------- FLASK (Health Check) ----------------
+# ---------------- FLASK (health check) ----------------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is running", 200
+    return "Bot running", 200
 
 def run_flask():
     app.run(host="0.0.0.0", port=8000)
@@ -50,81 +54,85 @@ def is_video(url):
 def make_stream(url, token):
     return f"{STREAM_API}?url={url}&token={token}"
 
-# ---------------- BOT HANDLERS ----------------
+# ---------------- BOT ----------------
 @bot.on_message(filters.command("start") & filters.private)
 async def start(_, m: Message):
     user_data[m.from_user.id] = {}
-    await m.reply("📂 Send your text file containing PDF/video links.")
+    await m.reply("📂 Send .txt file with PDF / Video links")
 
 @bot.on_message(filters.document & filters.private)
 async def file_handler(_, m: Message):
     if not m.document.file_name.endswith(".txt"):
-        return await m.reply("❌ Only .txt files are allowed.")
-    
+        return await m.reply("❌ Only .txt files allowed")
+
     uid = m.from_user.id
     path = await m.download()
+
     with open(path, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    
-    user_data[uid]["lines"] = lines
-    user_data[uid]["index"] = 0
-    await m.reply(f"✅ File loaded. Total links: {len(lines)}\n\n➡️ Send the starting link number (1-based)")
+        lines = [i.strip() for i in f if i.strip()]
+
+    user_data[uid] = {
+        "lines": lines,
+        "index": 0
+    }
+
+    await m.reply(
+        f"✅ File loaded\n"
+        f"🔗 Total links: {len(lines)}\n\n"
+        f"➡️ Send starting number (1-based)"
+    )
 
 @bot.on_message(filters.text & filters.private)
 async def text_handler(_, m: Message):
     uid = m.from_user.id
     if uid not in user_data:
         return
-    
+
     d = user_data[uid]
     txt = m.text.strip()
 
-    # STEP 1: Start index
+    # Start index
     if "start" not in d and txt.isdigit():
         d["start"] = int(txt) - 1
         d["index"] = d["start"]
-        await m.reply("📝 Send batch name (will appear in description).")
+        await m.reply("📝 Send batch name")
         return
-    
-    # STEP 2: Batch name
+
+    # Batch name
     if "batch" not in d:
         d["batch"] = txt
-        await m.reply("🚀 Processing started...")
-        await process_next(uid, m)
+        await m.reply("🔐 Send token (only once)")
+        d["need_token"] = True
         return
-    
-    # STEP 3: Token for video
+
+    # Token (only once)
     if d.get("need_token"):
         d["token"] = txt
         d["need_token"] = False
-        if "quality" not in d:
-            d["need_quality"] = True
-            await m.reply("🎞 Send quality for all videos (360 / 480 / 720).")
-        else:
-            await download_video(uid, m)
-            await process_next(uid, m)
-        return
-    
-    # STEP 4: Quality
-    if d.get("need_quality"):
-        if txt in ["360", "480", "720"]:
-            d["quality"] = txt
-            d["need_quality"] = False
-            await m.reply(f"✅ Quality set to {txt}p for all videos. Downloading next video...")
-            await download_video(uid, m)
-            await process_next(uid, m)
-        else:
-            await m.reply("❌ Invalid quality. Send 360, 480, or 720.")
+        await m.reply("🎞 Send quality (360 / 480 / 720)")
+        d["need_quality"] = True
         return
 
-# ---------------- CORE LOGIC ----------------
+    # Quality (only once)
+    if d.get("need_quality"):
+        if txt not in ["360", "480", "720"]:
+            return await m.reply("❌ Send 360 / 480 / 720 only")
+
+        d["quality"] = txt
+        d["need_quality"] = False
+        await m.reply(f"✅ Quality fixed: {txt}p\n🚀 Starting downloads...")
+        await process_next(uid, m)
+        return
+
+# ---------------- CORE ----------------
 async def process_next(uid, m):
     d = user_data[uid]
+
     if d["index"] >= len(d["lines"]):
-        await m.reply("✅ All links processed.")
+        await m.reply("✅ All downloads completed")
         user_data.pop(uid)
         return
-    
+
     title, url = parse_line(d["lines"][d["index"]])
     d["title"] = title
     d["url"] = url
@@ -134,69 +142,73 @@ async def process_next(uid, m):
         d["index"] += 1
         await process_next(uid, m)
         return
-    
+
     if is_video(url):
-        d["need_token"] = True
-        await m.reply(f"🔐 Send token for video: {title}")
+        await download_video(uid, m)
         return
-    
+
     d["index"] += 1
     await process_next(uid, m)
 
-# ---------------- DOWNLOAD / UPLOAD ----------------
+# ---------------- PDF ----------------
 async def download_pdf(m, title, url, batch):
     path = f"{DOWNLOAD_DIR}/{title}.pdf"
+
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as r:
             with open(path, "wb") as f:
-                async for chunk in r.content.iter_chunked(1024*1024):  # 1MB chunks
+                async for chunk in r.content.iter_chunked(1024 * 1024):
                     f.write(chunk)
+
     await m.reply_document(path, caption=f"📘 {title}\n📦 {batch}")
     os.remove(path)
 
+# ---------------- VIDEO ----------------
 async def download_video(uid, m):
     d = user_data[uid]
-    stream_url = make_stream(d["url"], d["token"])
     out = f"{DOWNLOAD_DIR}/{d['title']}.mp4"
+    stream_url = make_stream(d["url"], d["token"])
+
+    status = await m.reply("⬇️ Downloading video...")
+
+    def hook(h):
+        if h["status"] == "downloading":
+            p = h.get("_percent_str", "")
+            s = h.get("_speed_str", "")
+            e = h.get("_eta_str", "")
+            asyncio.run_coroutine_threadsafe(
+                status.edit(f"⬇️ {p} | {s} | ETA {e}"),
+                bot.loop
+            )
 
     ydl_opts = {
         "format": f"best[height<={d['quality']}]",
         "outtmpl": out,
         "noplaylist": True,
-        "progress_hooks": [lambda d_hook: asyncio.create_task(video_progress_hook(d_hook, m))],
+        "progress_hooks": [hook],
         "concurrent_fragment_downloads": 4
     }
 
-    loop = asyncio.get_event_loop()
     try:
-        await loop.run_in_executor(None, lambda: YoutubeDL(ydl_opts).download([stream_url]))
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: YoutubeDL(ydl_opts).download([stream_url])
+        )
     except Exception as e:
-        await m.reply(f"❌ Failed to download video {d['title']}\nError: {str(e)}")
-        d["index"] += 1
-        await process_next(uid, m)
+        await status.edit(f"❌ Video failed\n{e}\n🔁 Send new token")
+        d["need_token"] = True
         return
 
-    # Upload with progress
+    await status.edit("⬆️ Uploading...")
+
     await m.reply_video(
         out,
-        caption=f"🎥 {d['title']}\n📦 {d['batch']}\n📺 {d['quality']}p",
-        progress=upload_progress,
-        progress_args=(m,)
+        caption=f"🎥 {d['title']}\n📦 {d['batch']}\n📺 {d['quality']}p"
     )
+
     os.remove(out)
     d["index"] += 1
+    await process_next(uid, m)
 
-# ---------------- PROGRESS HOOK ----------------
-async def video_progress_hook(d_hook, m):
-    if d_hook["status"] == "downloading":
-        perc = d_hook.get("_percent_str", "0%")
-        speed = d_hook.get("_speed_str", "0B/s")
-        eta = d_hook.get("_eta_str", "0s")
-        await m.reply(f"⬇️ Downloading: {perc} at {speed}, ETA {eta}", quote=True)
-
-async def upload_progress(current, total, m):
-    perc = current / total * 100
-    await m.edit(f"⬆️ Uploading: {perc:.1f}% ({current/1024/1024:.2f}/{total/1024/1024:.2f} MB)")
-
-# ---------------- START BOT ----------------
+# ---------------- RUN ----------------
 bot.run()
