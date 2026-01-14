@@ -31,7 +31,7 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=8000)
 
-threading.Thread(target=run_flask).start()
+threading.Thread(target=run_flask, daemon=True).start()
 
 # ---------------- HELPERS ----------------
 def parse_line(line):
@@ -92,20 +92,31 @@ async def text_handler(_, m: Message):
         await process_next(uid, m)
         return
     
-    # STEP 3: Token
+    # STEP 3: Token for video
     if d.get("need_token"):
         d["token"] = txt
         d["need_token"] = False
-        d["need_quality"] = True
-        await m.reply("🎞 Send quality for video upload (360 / 480 / 720).")
+        # Ask quality only once if not already set
+        if "quality" not in d:
+            d["need_quality"] = True
+            await m.reply("🎞 Send quality for all videos (360 / 480 / 720).")
+        else:
+            # Already quality set, proceed to download video
+            await download_video(uid, m)
+            await process_next(uid, m)
         return
     
-    # STEP 4: Quality
-    if d.get("need_quality") and txt in ["360","480","720"]:
-        d["quality"] = txt
-        d["need_quality"] = False
-        await download_video(uid, m)
-        await process_next(uid, m)
+    # STEP 4: Quality (single choice)
+    if d.get("need_quality"):
+        if txt in ["360", "480", "720"]:
+            d["quality"] = txt
+            d["need_quality"] = False
+            await m.reply(f"✅ Quality set to {txt}p for all videos. Downloading next video...")
+            await download_video(uid, m)
+            await process_next(uid, m)
+        else:
+            await m.reply("❌ Invalid quality. Send 360, 480, or 720.")
+        return
 
 # ---------------- CORE LOGIC ----------------
 async def process_next(uid, m):
@@ -127,7 +138,7 @@ async def process_next(uid, m):
     
     if is_video(url):
         d["need_token"] = True
-        await m.reply("🔐 Send token for video link.")
+        await m.reply(f"🔐 Send token for video: {title}")
         return
     
     d["index"] += 1
