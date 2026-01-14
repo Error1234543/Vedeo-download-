@@ -26,7 +26,7 @@ bot = Client(
 
 user_data = {}
 
-# ---------------- FLASK (health check) ----------------
+# ---------------- FLASK ----------------
 app = Flask(__name__)
 
 @app.route("/")
@@ -71,11 +71,7 @@ async def file_handler(_, m: Message):
     with open(path, "r", encoding="utf-8") as f:
         lines = [i.strip() for i in f if i.strip()]
 
-    user_data[uid] = {
-        "lines": lines,
-        "index": 0
-    }
-
+    user_data[uid] = {"lines": lines, "index": 0}
     await m.reply(
         f"✅ File loaded\n"
         f"🔗 Total links: {len(lines)}\n\n"
@@ -91,38 +87,33 @@ async def text_handler(_, m: Message):
     d = user_data[uid]
     txt = m.text.strip()
 
-    # Start index
     if "start" not in d and txt.isdigit():
         d["start"] = int(txt) - 1
         d["index"] = d["start"]
         await m.reply("📝 Send batch name")
         return
 
-    # Batch name
     if "batch" not in d:
         d["batch"] = txt
-        await m.reply("🔐 Send token (only once)")
         d["need_token"] = True
+        await m.reply("🔐 Send token (only once)")
         return
 
-    # Token (only once)
     if d.get("need_token"):
         d["token"] = txt
         d["need_token"] = False
-        await m.reply("🎞 Send quality (360 / 480 / 720)")
         d["need_quality"] = True
+        await m.reply("🎞 Send quality (360 / 480 / 720)")
         return
 
-    # Quality (only once)
     if d.get("need_quality"):
         if txt not in ["360", "480", "720"]:
             return await m.reply("❌ Send 360 / 480 / 720 only")
 
         d["quality"] = txt
         d["need_quality"] = False
-        await m.reply(f"✅ Quality fixed: {txt}p\n🚀 Starting downloads...")
+        await m.reply(f"✅ Quality locked: {txt}p\n🚀 Starting downloads...")
         await process_next(uid, m)
-        return
 
 # ---------------- CORE ----------------
 async def process_next(uid, m):
@@ -171,22 +162,40 @@ async def download_video(uid, m):
 
     status = await m.reply("⬇️ Downloading video...")
 
+    last = {"t": 0}
+
     def hook(h):
         if h["status"] == "downloading":
-            p = h.get("_percent_str", "")
-            s = h.get("_speed_str", "")
-            e = h.get("_eta_str", "")
+            if h.get("elapsed", 0) - last["t"] < 3:
+                return
+            last["t"] = h.get("elapsed", 0)
+
+            p = h.get("_percent_str", "0%")
+            s = h.get("_speed_str", "0 KB/s")
+            e = h.get("_eta_str", "?")
+
             asyncio.run_coroutine_threadsafe(
                 status.edit(f"⬇️ {p} | {s} | ETA {e}"),
                 bot.loop
             )
 
     ydl_opts = {
-        "format": f"best[height<={d['quality']}]",
+        "format": f"bv*[height<={d['quality']}]+ba/b",
         "outtmpl": out,
         "noplaylist": True,
+        "quiet": True,
+
+        # 🔥 IMPORTANT HEADERS (FIX 500 ERROR)
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
+            "Referer": "https://anonymouspwplayerr-c96de7802811.herokuapp.com/",
+            "Origin": "https://anonymouspwplayerr-c96de7802811.herokuapp.com",
+        },
+
         "progress_hooks": [hook],
-        "concurrent_fragment_downloads": 4
+        "concurrent_fragment_downloads": 1,
+        "retries": 5,
+        "fragment_retries": 5,
     }
 
     try:
@@ -195,7 +204,10 @@ async def download_video(uid, m):
             lambda: YoutubeDL(ydl_opts).download([stream_url])
         )
     except Exception as e:
-        await status.edit(f"❌ Video failed\n{e}\n🔁 Send new token")
+        await status.edit(
+            "❌ Video failed\n"
+            "🔁 Send new token"
+        )
         d["need_token"] = True
         return
 
