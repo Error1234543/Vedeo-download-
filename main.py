@@ -1,11 +1,13 @@
+
 import os
 import asyncio
-import subprocess
 import aiohttp
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from flask import Flask
 import threading
+from yt_dlp import YoutubeDL
+from datetime import datetime
 
 # ---------------- CONFIG ----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -18,7 +20,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 STREAM_API = "https://anonymouspwplayerr-c96de7802811.herokuapp.com/pw"
 
 bot = Client("pw-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
 user_data = {}
 
 # ---------------- FLASK (Health Check) ----------------
@@ -96,17 +97,15 @@ async def text_handler(_, m: Message):
     if d.get("need_token"):
         d["token"] = txt
         d["need_token"] = False
-        # Ask quality only once if not already set
         if "quality" not in d:
             d["need_quality"] = True
             await m.reply("🎞 Send quality for all videos (360 / 480 / 720).")
         else:
-            # Already quality set, proceed to download video
             await download_video(uid, m)
             await process_next(uid, m)
         return
     
-    # STEP 4: Quality (single choice)
+    # STEP 4: Quality
     if d.get("need_quality"):
         if txt in ["360", "480", "720"]:
             d["quality"] = txt
@@ -144,12 +143,14 @@ async def process_next(uid, m):
     d["index"] += 1
     await process_next(uid, m)
 
+# ---------------- DOWNLOAD / UPLOAD ----------------
 async def download_pdf(m, title, url, batch):
     path = f"{DOWNLOAD_DIR}/{title}.pdf"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as r:
             with open(path, "wb") as f:
-                f.write(await r.read())
+                async for chunk in r.content.iter_chunked(1024*1024):  # 1MB chunks
+                    f.write(chunk)
     await m.reply_document(path, caption=f"📘 {title}\n📦 {batch}")
     os.remove(path)
 
@@ -157,20 +158,45 @@ async def download_video(uid, m):
     d = user_data[uid]
     stream_url = make_stream(d["url"], d["token"])
     out = f"{DOWNLOAD_DIR}/{d['title']}.mp4"
-    
-    subprocess.run([
-        "yt-dlp",
-        "-f", f"best[height<={d['quality']}]",
-        stream_url,
-        "-o", out
-    ])
-    
+
+    ydl_opts = {
+        "format": f"best[height<={d['quality']}]",
+        "outtmpl": out,
+        "noplaylist": True,
+        "progress_hooks": [lambda d_hook: asyncio.create_task(video_progress_hook(d_hook, m))],
+        "concurrent_fragment_downloads": 4
+    }
+
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, lambda: YoutubeDL(ydl_opts).download([stream_url]))
+    except Exception as e:
+        await m.reply(f"❌ Failed to download video {d['title']}\nError: {str(e)}")
+        d["index"] += 1
+        await process_next(uid, m)
+        return
+
+    # Upload with progress
     await m.reply_video(
         out,
-        caption=f"🎥 {d['title']}\n📦 {d['batch']}\n📺 {d['quality']}p"
+        caption=f"🎥 {d['title']}\n📦 {d['batch']}\n📺 {d['quality']}p",
+        progress=upload_progress,
+        progress_args=(m,)
     )
     os.remove(out)
     d["index"] += 1
+
+# ---------------- PROGRESS HOOK ----------------
+async def video_progress_hook(d_hook, m):
+    if d_hook["status"] == "downloading":
+        perc = d_hook.get("_percent_str", "0%")
+        speed = d_hook.get("_speed_str", "0B/s")
+        eta = d_hook.get("_eta_str", "0s")
+        await m.reply(f"⬇️ Downloading: {perc} at {speed}, ETA {eta}", quote=True)
+
+async def upload_progress(current, total, m):
+    perc = current / total * 100
+    await m.edit(f"⬆️ Uploading: {perc:.1f}% ({current/1024/1024:.2f}/{total/1024/1024:.2f} MB)")
 
 # ---------------- START BOT ----------------
 bot.run()
