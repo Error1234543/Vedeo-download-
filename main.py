@@ -7,15 +7,13 @@ from flask import Flask
 import threading
 from yt_dlp import YoutubeDL
 
-# ---------------- CONFIG ----------------
+# ================= CONFIG =================
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-STREAM_API = "https://anonymouspwplayerr-c96de7802811.herokuapp.com/pw"
 
 bot = Client(
     "pw-bot",
@@ -26,7 +24,7 @@ bot = Client(
 
 user_data = {}
 
-# ---------------- FLASK ----------------
+# ================= FLASK =================
 app = Flask(__name__)
 
 @app.route("/")
@@ -38,7 +36,7 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# ---------------- HELPERS ----------------
+# ================= HELPERS =================
 def parse_line(line):
     if ":" in line:
         t, u = line.split(":", 1)
@@ -51,10 +49,7 @@ def is_pdf(url):
 def is_video(url):
     return "mpd" in url or "m3u8" in url
 
-def make_stream(url, token):
-    return f"{STREAM_API}?url={url}&token={token}"
-
-# ---------------- BOT ----------------
+# ================= BOT =================
 @bot.on_message(filters.command("start") & filters.private)
 async def start(_, m: Message):
     user_data[m.from_user.id] = {}
@@ -63,7 +58,7 @@ async def start(_, m: Message):
 @bot.on_message(filters.document & filters.private)
 async def file_handler(_, m: Message):
     if not m.document.file_name.endswith(".txt"):
-        return await m.reply("❌ Only .txt files allowed")
+        return await m.reply("❌ Only .txt allowed")
 
     uid = m.from_user.id
     path = await m.download()
@@ -71,7 +66,11 @@ async def file_handler(_, m: Message):
     with open(path, "r", encoding="utf-8") as f:
         lines = [i.strip() for i in f if i.strip()]
 
-    user_data[uid] = {"lines": lines, "index": 0}
+    user_data[uid] = {
+        "lines": lines,
+        "index": 0
+    }
+
     await m.reply(
         f"✅ File loaded\n"
         f"🔗 Total links: {len(lines)}\n\n"
@@ -87,35 +86,40 @@ async def text_handler(_, m: Message):
     d = user_data[uid]
     txt = m.text.strip()
 
+    # Start index
     if "start" not in d and txt.isdigit():
         d["start"] = int(txt) - 1
         d["index"] = d["start"]
         await m.reply("📝 Send batch name")
         return
 
+    # Batch
     if "batch" not in d:
         d["batch"] = txt
-        d["need_token"] = True
         await m.reply("🔐 Send token (only once)")
+        d["need_token"] = True
         return
 
+    # Token
     if d.get("need_token"):
         d["token"] = txt
         d["need_token"] = False
-        d["need_quality"] = True
         await m.reply("🎞 Send quality (360 / 480 / 720)")
+        d["need_quality"] = True
         return
 
+    # Quality
     if d.get("need_quality"):
         if txt not in ["360", "480", "720"]:
             return await m.reply("❌ Send 360 / 480 / 720 only")
 
         d["quality"] = txt
         d["need_quality"] = False
-        await m.reply(f"✅ Quality locked: {txt}p\n🚀 Starting downloads...")
+        await m.reply(f"✅ Quality fixed: {txt}p\n🚀 Starting downloads...")
         await process_next(uid, m)
+        return
 
-# ---------------- CORE ----------------
+# ================= CORE =================
 async def process_next(uid, m):
     d = user_data[uid]
 
@@ -141,7 +145,7 @@ async def process_next(uid, m):
     d["index"] += 1
     await process_next(uid, m)
 
-# ---------------- PDF ----------------
+# ================= PDF =================
 async def download_pdf(m, title, url, batch):
     path = f"{DOWNLOAD_DIR}/{title}.pdf"
 
@@ -154,11 +158,10 @@ async def download_pdf(m, title, url, batch):
     await m.reply_document(path, caption=f"📘 {title}\n📦 {batch}")
     os.remove(path)
 
-# ---------------- VIDEO ----------------
+# ================= VIDEO =================
 async def download_video(uid, m):
     d = user_data[uid]
     out = f"{DOWNLOAD_DIR}/{d['title']}.mp4"
-    stream_url = make_stream(d["url"], d["token"])
 
     status = await m.reply("⬇️ Downloading video...")
 
@@ -182,31 +185,33 @@ async def download_video(uid, m):
     ydl_opts = {
         "format": f"bv*[height<={d['quality']}]+ba/b",
         "outtmpl": out,
-        "noplaylist": True,
+        "merge_output_format": "mp4",
         "quiet": True,
 
-        # 🔥 IMPORTANT HEADERS (FIX 500 ERROR)
+        # IMPORTANT HEADERS
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
-            "Referer": "https://anonymouspwplayerr-c96de7802811.herokuapp.com/",
-            "Origin": "https://anonymouspwplayerr-c96de7802811.herokuapp.com",
+            "User-Agent": "Mozilla/5.0",
+            "Authorization": f"Bearer {d['token']}",
+            "Referer": "https://physicswallah.live/",
+            "Origin": "https://physicswallah.live",
         },
 
         "progress_hooks": [hook],
+        "retries": 10,
+        "fragment_retries": 10,
         "concurrent_fragment_downloads": 1,
-        "retries": 5,
-        "fragment_retries": 5,
     }
 
     try:
         await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: YoutubeDL(ydl_opts).download([stream_url])
+            lambda: YoutubeDL(ydl_opts).download([d["url"]])
         )
-    except Exception as e:
+    except Exception:
         await status.edit(
             "❌ Video failed\n"
-            "🔁 Send new token"
+            "⚠️ DRM / Token expired\n"
+            "➡️ Send fresh token"
         )
         d["need_token"] = True
         return
@@ -222,5 +227,5 @@ async def download_video(uid, m):
     d["index"] += 1
     await process_next(uid, m)
 
-# ---------------- RUN ----------------
+# ================= RUN =================
 bot.run()
