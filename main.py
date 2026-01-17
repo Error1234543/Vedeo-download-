@@ -1,231 +1,142 @@
 import os
-import asyncio
-import aiohttp
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from flask import Flask
-import threading
-from yt_dlp import YoutubeDL
+import re
+import time
+import math
+import subprocess
+import telebot
 
 # ================= CONFIG =================
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-bot = Client(
-    "pw-bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-user_data = {}
+# ================= UTILS =================
+def human_size(size):
+    if size is None:
+        return "0 MB"
+    power = 1024
+    n = 0
+    Dic_powerN = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB'}
+    while size > power:
+        size /= power
+        n += 1
+    return f"{size:.2f} {Dic_powerN[n]}"
 
-# ================= FLASK =================
-app = Flask(__name__)
+def extract_name(text):
+    m = re.search(r"-n\s+(.+)$", text)
+    return m.group(1).strip() if m else "Video"
 
-@app.route("/")
-def home():
-    return "Bot running", 200
+def extract_url(text):
+    return text.split("-n")[0].strip()
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8000)
+# ================= HANDLER =================
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
+def stream_download(message):
+    url = extract_url(message.text)
+    title = extract_name(message.text)
 
-threading.Thread(target=run_flask, daemon=True).start()
+    output = os.path.join(DOWNLOAD_DIR, f"{title}.mp4")
 
-# ================= HELPERS =================
-def parse_line(line):
-    if ":" in line:
-        t, u = line.split(":", 1)
-        return t.strip(), u.strip()
-    return None, None
+    msg = bot.reply_to(message, "⏳ Initializing download...")
 
-def is_pdf(url):
-    return ".pdf" in url.lower()
+    last_update = 0
 
-def is_video(url):
-    return "mpd" in url or "m3u8" in url
-
-# ================= BOT =================
-@bot.on_message(filters.command("start") & filters.private)
-async def start(_, m: Message):
-    user_data[m.from_user.id] = {}
-    await m.reply("📂 Send .txt file with PDF / Video links")
-
-@bot.on_message(filters.document & filters.private)
-async def file_handler(_, m: Message):
-    if not m.document.file_name.endswith(".txt"):
-        return await m.reply("❌ Only .txt allowed")
-
-    uid = m.from_user.id
-    path = await m.download()
-
-    with open(path, "r", encoding="utf-8") as f:
-        lines = [i.strip() for i in f if i.strip()]
-
-    user_data[uid] = {
-        "lines": lines,
-        "index": 0
-    }
-
-    await m.reply(
-        f"✅ File loaded\n"
-        f"🔗 Total links: {len(lines)}\n\n"
-        f"➡️ Send starting number (1-based)"
-    )
-
-@bot.on_message(filters.text & filters.private)
-async def text_handler(_, m: Message):
-    uid = m.from_user.id
-    if uid not in user_data:
-        return
-
-    d = user_data[uid]
-    txt = m.text.strip()
-
-    # Start index
-    if "start" not in d and txt.isdigit():
-        d["start"] = int(txt) - 1
-        d["index"] = d["start"]
-        await m.reply("📝 Send batch name")
-        return
-
-    # Batch
-    if "batch" not in d:
-        d["batch"] = txt
-        await m.reply("🔐 Send token (only once)")
-        d["need_token"] = True
-        return
-
-    # Token
-    if d.get("need_token"):
-        d["token"] = txt
-        d["need_token"] = False
-        await m.reply("🎞 Send quality (360 / 480 / 720)")
-        d["need_quality"] = True
-        return
-
-    # Quality
-    if d.get("need_quality"):
-        if txt not in ["360", "480", "720"]:
-            return await m.reply("❌ Send 360 / 480 / 720 only")
-
-        d["quality"] = txt
-        d["need_quality"] = False
-        await m.reply(f"✅ Quality fixed: {txt}p\n🚀 Starting downloads...")
-        await process_next(uid, m)
-        return
-
-# ================= CORE =================
-async def process_next(uid, m):
-    d = user_data[uid]
-
-    if d["index"] >= len(d["lines"]):
-        await m.reply("✅ All downloads completed")
-        user_data.pop(uid)
-        return
-
-    title, url = parse_line(d["lines"][d["index"]])
-    d["title"] = title
-    d["url"] = url
-
-    if is_pdf(url):
-        await download_pdf(m, title, url, d["batch"])
-        d["index"] += 1
-        await process_next(uid, m)
-        return
-
-    if is_video(url):
-        await download_video(uid, m)
-        return
-
-    d["index"] += 1
-    await process_next(uid, m)
-
-# ================= PDF =================
-async def download_pdf(m, title, url, batch):
-    path = f"{DOWNLOAD_DIR}/{title}.pdf"
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as r:
-            with open(path, "wb") as f:
-                async for chunk in r.content.iter_chunked(1024 * 1024):
-                    f.write(chunk)
-
-    await m.reply_document(path, caption=f"📘 {title}\n📦 {batch}")
-    os.remove(path)
-
-# ================= VIDEO =================
-async def download_video(uid, m):
-    d = user_data[uid]
-    out = f"{DOWNLOAD_DIR}/{d['title']}.mp4"
-
-    status = await m.reply("⬇️ Downloading video...")
-
-    last = {"t": 0}
-
-    def hook(h):
-        if h["status"] == "downloading":
-            if h.get("elapsed", 0) - last["t"] < 3:
+    def progress_hook(d):
+        nonlocal last_update
+        if d["status"] == "downloading":
+            now = time.time()
+            if now - last_update < 2:
                 return
-            last["t"] = h.get("elapsed", 0)
+            last_update = now
 
-            p = h.get("_percent_str", "0%")
-            s = h.get("_speed_str", "0 KB/s")
-            e = h.get("_eta_str", "?")
+            downloaded = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            speed = d.get("speed", 0)
+            eta = d.get("eta", 0)
 
-            asyncio.run_coroutine_threadsafe(
-                status.edit(f"⬇️ {p} | {s} | ETA {e}"),
-                bot.loop
+            text = (
+                f"⬇️ <b>Downloading</b>\n\n"
+                f"📁 <b>{title}.mp4</b>\n"
+                f"📦 {human_size(downloaded)} / {human_size(total)}\n"
+                f"⚡ Speed: {human_size(speed)}/s\n"
+                f"⏳ ETA: {eta}s"
             )
 
-    ydl_opts = {
-        "format": f"bv*[height<={d['quality']}]+ba/b",
-        "outtmpl": out,
-        "merge_output_format": "mp4",
-        "quiet": True,
+            try:
+                bot.edit_message_text(text, message.chat.id, msg.message_id)
+            except:
+                pass
 
-        # IMPORTANT HEADERS
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0",
-            "Authorization": f"Bearer {d['token']}",
-            "Referer": "https://physicswallah.live/",
-            "Origin": "https://physicswallah.live",
-        },
-
-        "progress_hooks": [hook],
-        "retries": 10,
-        "fragment_retries": 10,
-        "concurrent_fragment_downloads": 1,
-    }
+    ytdlp_cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "--merge-output-format", "mp4",
+        "--add-header", "User-Agent:Mozilla/5.0",
+        "--add-header", "Referer:https://physicswallah.live/",
+        "--add-header", "Origin:https://physicswallah.live",
+        "--no-check-certificates",
+        "-o", output,
+        url,
+        "--progress"
+    ]
 
     try:
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: YoutubeDL(ydl_opts).download([d["url"]])
+        subprocess.Popen(
+            ytdlp_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT
         )
-    except Exception:
-        await status.edit(
-            "❌ Video failed\n"
-            "⚠️ DRM / Token expired\n"
-            "➡️ Send fresh token"
+
+        subprocess.run(ytdlp_cmd, check=True)
+
+    except:
+        bot.edit_message_text(
+            "❌ Video failed\n⚠️ DRM / Token expired",
+            message.chat.id,
+            msg.message_id
         )
-        d["need_token"] = True
         return
 
-    await status.edit("⬆️ Uploading...")
-
-    await m.reply_video(
-        out,
-        caption=f"🎥 {d['title']}\n📦 {d['batch']}\n📺 {d['quality']}p"
+    # ================= UPLOAD =================
+    bot.edit_message_text(
+        f"⬆️ <b>Uploading</b>\n\n📁 <b>{title}.mp4</b>",
+        message.chat.id,
+        msg.message_id
     )
 
-    os.remove(out)
-    d["index"] += 1
-    await process_next(uid, m)
+    start = time.time()
+    sent = 0
+    file_size = os.path.getsize(output)
 
-# ================= RUN =================
-bot.run()
+    def upload_progress(current, total):
+        nonlocal sent
+        sent = current
+        speed = current / (time.time() - start + 1)
+        text = (
+            f"⬆️ <b>Uploading</b>\n\n"
+            f"📁 <b>{title}.mp4</b>\n"
+            f"📦 {human_size(current)} / {human_size(total)}\n"
+            f"⚡ Speed: {human_size(speed)}/s"
+        )
+        try:
+            bot.edit_message_text(text, message.chat.id, msg.message_id)
+        except:
+            pass
+
+    with open(output, "rb") as f:
+        bot.send_video(
+            message.chat.id,
+            f,
+            caption=title,
+            supports_streaming=True,
+            progress=upload_progress
+        )
+
+    bot.delete_message(message.chat.id, msg.message_id)
+    os.remove(output)
+
+# ================= START =================
+print("Bot Started")
+bot.infinity_polling()
