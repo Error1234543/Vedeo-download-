@@ -1,4 +1,4 @@
-pyTelegramBotAPI==4.14.0
-yt-dlp
+flask
+pyrogram==2.0.106
 tgcrypto
-requests
+yt-dlp
