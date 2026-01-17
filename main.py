@@ -1,159 +1,186 @@
-import os, asyncio, requests
+import os
+import time
+import threading
+import subprocess
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import yt_dlp
+from yt_dlp import YoutubeDL
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ================= CONFIG =================
+API_ID = 20619533
+API_HASH = "5893568858a096b7373c1970ba05e296"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 
+ALLOWED_GROUP = -1002432150473
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-STREAM_API = "https://anonymouspwplayerr-c96de7802811.herokuapp.com/pw"
+# ================= KEEP ALIVE =================
+app = Flask(__name__)
 
-app = Client(
-    "txt-leech-bot",
+@app.route("/")
+def home():
+    return "Bot Alive 🔥"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+# ================= BOT =================
+bot = Client(
+    "render-bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-user_data = {}
-user_tasks = {}
+active_users = set()
 
-# ---------------- UTIL ----------------
-def parse_txt(text):
-    data = []
-    for line in text.splitlines():
-        if ":" in line:
-            t, u = line.split(":", 1)
-            data.append((t.strip(), u.strip()))
-    return data
+# ================= SPEED FORMAT =================
+def human(size):
+    for unit in ['B','KB','MB','GB','TB']:
+        if size < 1024:
+            return f"{size:.2f}{unit}"
+        size /= 1024
 
-def is_video(url):
-    return "cloudfront" in url or ".mpd" in url or ".m3u8" in url
+# ================= DOWNLOAD =================
+def download_video(url, status_msg: Message):
+    last_edit = time.time()
 
-# ---------------- COMMANDS ----------------
-@app.on_message(filters.command("dl") & filters.private)
-async def start_dl(_, m):
-    user_data[m.from_user.id] = {}
-    await m.reply("📄 TXT file bhejo")
+    def progress(d):
+        nonlocal last_edit
+        if d['status'] == 'downloading':
+            if time.time() - last_edit > 3:
+                speed = d.get('speed', 0)
+                eta = d.get('eta', 0)
+                downloaded = d.get('downloaded_bytes', 0)
+                total = d.get('total_bytes') or d.get('total_bytes_estimate')
 
-@app.on_message(filters.document & filters.private)
-async def txt_handler(_, m: Message):
-    if not m.document.file_name.endswith(".txt"):
-        return await m.reply("❌ Sirf .txt file")
+                text = (
+                    "⬇️ Downloading...\n"
+                    f"⚡ Speed: {human(speed)}/s\n"
+                    f"📦 Downloaded: {human(downloaded)}\n"
+                    f"⏳ ETA: {eta}s"
+                )
+                if total:
+                    text += f"\n📁 Total: {human(total)}"
 
-    uid = m.from_user.id
-    path = await m.download()
+                try:
+                    status_msg.edit(text)
+                except:
+                    pass
 
-    with open(path, "r", encoding="utf-8") as f:
-        links = parse_txt(f.read())
-
-    user_data[uid]["links"] = links
-
-    await m.reply(
-        f"✅ File loaded\n"
-        f"🔗 Total links: {len(links)}\n\n"
-        f"➡️ Batao kis number se start kare (1-based)"
-    )
-
-@app.on_message(filters.text & filters.private)
-async def flow(_, m):
-    uid = m.from_user.id
-    if uid not in user_data:
-        return
-
-    d = user_data[uid]
-
-    if "start" not in d and m.text.isdigit():
-        d["start"] = int(m.text) - 1
-        await m.reply("🔑 Token bhejo (sirf 1 baar)")
-        return
-
-    if "token" not in d:
-        d["token"] = m.text.strip()
-        await m.reply("🚀 Download start ho raha hai...")
-        user_tasks[uid] = asyncio.create_task(queue(uid, m))
-        return
-
-# ---------------- QUEUE ----------------
-async def queue(uid, m):
-    d = user_data[uid]
-    links = d["links"]
-    token = d["token"]
-
-    for i in range(d["start"], len(links)):
-        if uid not in user_tasks:
-            break
-
-        title, url = links[i]
-
-        if is_video(url):
-            stream = f"{STREAM_API}?url={url}&token={token}"
-            await download_video(m, title, stream)
-        else:
-            await download_pdf(m, title, url)
-
-    await m.reply("✅ All downloads completed")
-    user_tasks.pop(uid, None)
-    user_data.pop(uid, None)
-
-# ---------------- PDF ----------------
-async def download_pdf(m, title, url):
-    file = f"{DOWNLOAD_DIR}/{title}.pdf"
-    r = requests.get(url, stream=True)
-
-    with open(file, "wb") as f:
-        for c in r.iter_content(1024 * 1024):
-            f.write(c)
-
-    await m.reply_document(file, caption=title)
-    os.remove(file)
-
-# ---------------- VIDEO ----------------
-async def download_video(m, title, url):
-    status = await m.reply(f"⬇️ Downloading\n🎬 {title}")
-
-    def hook(d):
-        if d["status"] == "downloading":
-            p = d.get("_percent_str", "")
-            s = d.get("_speed_str", "")
-            e = d.get("_eta_str", "")
-            asyncio.run_coroutine_threadsafe(
-                status.edit(
-                    f"⬇️ Downloading\n"
-                    f"🎬 {title}\n"
-                    f"📊 {p}\n"
-                    f"🚀 {s}\n"
-                    f"⏳ ETA {e}"
-                ),
-                app.loop
-            )
-
-    out = f"{DOWNLOAD_DIR}/{title}.mp4"
+                last_edit = time.time()
 
     ydl_opts = {
-        "outtmpl": out,
-        "progress_hooks": [hook],
-        "quiet": True,
+        "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
+        "progress_hooks": [progress],
         "retries": 5,
-        "fragment_retries": 5
+        "fragment_retries": 5,
+        "socket_timeout": 30,
+        "concurrent_fragment_downloads": 1,
+        "noplaylist": True,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        return True
+    except Exception as e:
+        print(e)
+        return False
 
-    await m.reply_video(out, caption=title)
-    os.remove(out)
+# ================= UPLOAD =================
+def upload_video(file_path, message: Message):
+    start = time.time()
 
-# ---------------- CANCEL ----------------
-@app.on_message(filters.command("cancel") & filters.private)
-async def cancel(_, m):
-    uid = m.from_user.id
-    if uid in user_tasks:
-        user_tasks.pop(uid)
-        await m.reply("❌ Download cancelled")
+    def progress(current, total):
+        elapsed = time.time() - start
+        speed = current / elapsed if elapsed > 0 else 0
 
-app.run()
+        text = (
+            "⬆️ Uploading...\n"
+            f"⚡ Speed: {human(speed)}/s\n"
+            f"📤 Uploaded: {human(current)} / {human(total)}"
+        )
+        try:
+            message.edit(text)
+        except:
+            pass
+
+    bot.send_video(
+        chat_id=message.chat.id,
+        video=file_path,
+        caption="✅ Upload complete",
+        progress=progress
+    )
+
+# ================= SINGLE LINK =================
+@bot.on_message(filters.text & filters.group)
+def single_link(_, message: Message):
+    if message.from_user.id in active_users:
+        return message.reply("⏳ Ek download pehle se chal raha hai")
+
+    url = message.text.strip()
+    if not url.startswith("http"):
+        return
+
+    active_users.add(message.from_user.id)
+    status = message.reply("⬇️ Starting download...")
+
+    ok = download_video(url, status)
+
+    if ok:
+        status.edit("📤 Upload shuru...")
+        for f in os.listdir(DOWNLOAD_DIR):
+            path = os.path.join(DOWNLOAD_DIR, f)
+            upload_video(path, status)
+            os.remove(path)
+    else:
+        status.edit("❌ Download failed")
+
+    active_users.remove(message.from_user.id)
+
+# ================= /dl COMMAND =================
+@bot.on_message(filters.command("dl") & filters.group)
+def ask_txt(_, message: Message):
+    message.reply("📄 TXT file bhejo jisme links ho")
+
+# ================= TXT FILE =================
+@bot.on_message(filters.document & filters.group)
+def txt_handler(_, message: Message):
+    if not message.document.file_name.endswith(".txt"):
+        return
+
+    if message.from_user.id in active_users:
+        return message.reply("⏳ Download chal raha hai")
+
+    active_users.add(message.from_user.id)
+
+    file_path = message.download()
+    status = message.reply("📂 TXT file read kar raha hoon...")
+
+    with open(file_path, "r") as f:
+        links = [x.strip() for x in f if x.strip().startswith("http")]
+
+    total = len(links)
+
+    for i, link in enumerate(links, start=1):
+        status.edit(f"⬇️ ({i}/{total}) Download start")
+        download_video(link, status)
+
+        for f in os.listdir(DOWNLOAD_DIR):
+            path = os.path.join(DOWNLOAD_DIR, f)
+            upload_video(path, status)
+            os.remove(path)
+
+        time.sleep(5)  # Render safe gap
+
+    status.edit("✅ Sab downloads complete")
+    active_users.remove(message.from_user.id)
+
+# ================= START =================
+print("Bot Started 🔥")
+bot.run()
