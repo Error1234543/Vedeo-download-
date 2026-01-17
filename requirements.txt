@@ -1,5 +1,4 @@
-pyrogram
-tgcrypto
-aiohttp
-flask
+pyTelegramBotAPI==4.14.0
 yt-dlp
+tgcrypto
+requests
