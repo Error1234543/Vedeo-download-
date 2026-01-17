@@ -1,138 +1,152 @@
-import os
-import asyncio
-import aiohttp
-import threading
+import os, re, asyncio, signal, sys, time, math
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from yt_dlp import YoutubeDL
-from flask import Flask
+import yt_dlp
+import requests
 
-# ================= CONFIG =================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# ================= PYROGRAM =================
-bot = Client(
-    "stream-downloader",
+user_tasks = {}
+user_data = {}
+
+app = Client(
+    "leechbot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-# ================= FLASK (KOYEB HEALTH) =================
-app = Flask(__name__)
+# ---------- UTIL ----------
+def parse_txt(text):
+    links = []
+    for line in text.splitlines():
+        if ":" in line:
+            title, url = line.split(":", 1)
+            links.append((title.strip(), url.strip()))
+    return links
 
-@app.route("/")
-def home():
-    return "OK", 200
+def is_video(url):
+    return "cloudfront" in url or ".m3u8" in url or ".mpd" in url
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8000)
+# ---------- COMMANDS ----------
+@app.on_message(filters.command("dl"))
+async def dl_cmd(_, msg):
+    user_data[msg.from_user.id] = {}
+    await msg.reply("📄 **Text file bhejo (.txt)**")
 
-threading.Thread(target=run_flask, daemon=True).start()
+@app.on_message(filters.document & filters.private)
+async def txt_handler(_, msg: Message):
+    if not msg.document.file_name.endswith(".txt"):
+        return
 
-# ================= HELPERS =================
-def parse_message(text: str):
-    """
-    URL -n Title
-    """
-    if "-n" in text:
-        url, name = text.split("-n", 1)
-        return url.strip(), name.strip()
-    return text.strip(), "Video"
+    path = await msg.download()
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
 
-# ================= BOT =================
-@bot.on_message(filters.private & filters.text)
-async def stream_handler(_, m: Message):
-    url, title = parse_message(m.text)
+    links = parse_txt(content)
+    uid = msg.from_user.id
 
-    if not ("mpd" in url or "m3u8" in url):
-        return await m.reply("❌ Invalid stream URL")
+    user_data[uid]["links"] = links
 
-    out = f"{DOWNLOAD_DIR}/{title}.mp4"
-
-    status = await m.reply(
-        f"⬇️ Starting download...\n"
-        f"🎬 {title}\n"
-        f"⚙️ Engine: yt-dlp"
+    await msg.reply(
+        f"✅ **File Loaded**\n\n"
+        f"🔗 Total Links: `{len(links)}`\n\n"
+        f"👉 Batao kis number se start kare?"
     )
 
-    last_edit = 0
+@app.on_message(filters.text & filters.private)
+async def text_flow(_, msg):
+    uid = msg.from_user.id
+    if uid not in user_data:
+        return
 
-    # -------- DOWNLOAD PROGRESS --------
+    if "start" not in user_data[uid]:
+        if msg.text.isdigit():
+            user_data[uid]["start"] = int(msg.text) - 1
+            await msg.reply("🔑 **Token bhejo (sirf 1 baar)**")
+        return
+
+    if "token" not in user_data[uid]:
+        user_data[uid]["token"] = msg.text.strip()
+        await msg.reply("🚀 **Download start ho raha hai...**")
+        user_tasks[uid] = asyncio.create_task(start_queue(msg, uid))
+        return
+
+# ---------- DOWNLOAD QUEUE ----------
+async def start_queue(msg, uid):
+    links = user_data[uid]["links"]
+    start = user_data[uid]["start"]
+    token = user_data[uid]["token"]
+
+    for i in range(start, len(links)):
+        title, url = links[i]
+        if uid not in user_tasks:
+            break
+
+        if is_video(url):
+            api_url = f"https://anonymouspwplayerr-c96de7802811.herokuapp.com/pw?url={url}&token={token}"
+            await download_video(msg, title, api_url)
+        else:
+            await download_pdf(msg, title, url)
+
+    await msg.reply("✅ **All Done!**")
+    user_tasks.pop(uid, None)
+
+# ---------- PDF ----------
+async def download_pdf(msg, title, url):
+    r = requests.get(url, stream=True)
+    file = f"{DOWNLOAD_DIR}/{title}.pdf"
+    with open(file, "wb") as f:
+        for c in r.iter_content(1024):
+            f.write(c)
+
+    await msg.reply_document(file, caption=title)
+    os.remove(file)
+
+# ---------- VIDEO ----------
+async def download_video(msg, title, url):
+    status = await msg.reply(f"⬇️ Downloading...\n🎬 {title}")
+
     def hook(d):
-        nonlocal last_edit
         if d["status"] == "downloading":
-            now = asyncio.get_event_loop().time()
-            if now - last_edit < 1.2:
-                return
-            last_edit = now
-
+            speed = d.get("_speed_str", "N/A")
+            eta = d.get("_eta_str", "N/A")
             percent = d.get("_percent_str", "0%")
-            speed = d.get("_speed_str", "0 MB/s")
-            eta = d.get("_eta_str", "--")
-
-            text = (
-                f"⬇️ Downloading (yt-dlp)\n"
-                f"🎬 {title}\n"
-                f"📊 Progress : {percent}\n"
-                f"🚀 Speed : {speed}\n"
-                f"⏳ ETA : {eta}"
-            )
-
             asyncio.run_coroutine_threadsafe(
-                status.edit(text),
-                bot.loop
+                status.edit(
+                    f"⬇️ **Downloading**\n"
+                    f"🎬 {title}\n"
+                    f"📊 {percent}\n"
+                    f"🚀 Speed: {speed}\n"
+                    f"⏳ ETA: {eta}"
+                ),
+                app.loop
             )
 
     ydl_opts = {
-        "outtmpl": out,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
+        "outtmpl": f"{DOWNLOAD_DIR}/{title}.mp4",
         "progress_hooks": [hook],
-        "concurrent_fragment_downloads": 8,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://physicswallah.live"
-        }
+        "quiet": True
     }
 
-    try:
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: YoutubeDL(ydl_opts).download([url])
-        )
-    except Exception as e:
-        return await status.edit(f"❌ Download failed\n{e}")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
-    # -------- UPLOAD --------
-    upload_start = asyncio.get_event_loop().time()
+    file = f"{DOWNLOAD_DIR}/{title}.mp4"
+    await msg.reply_video(file, caption=title)
+    os.remove(file)
 
-    async def upload_progress(current, total):
-        elapsed = asyncio.get_event_loop().time() - upload_start
-        speed = (current / 1024 / 1024) / elapsed if elapsed > 0 else 0
-        percent = current * 100 / total
+# ---------- CANCEL ----------
+@app.on_message(filters.command("cancel"))
+async def cancel(_, msg):
+    uid = msg.from_user.id
+    if uid in user_tasks:
+        user_tasks.pop(uid)
+        await msg.reply("❌ **Download Cancelled**")
 
-        await status.edit(
-            f"⬆️ Uploading to Telegram\n"
-            f"🎬 {title}\n"
-            f"📊 Progress : {percent:.1f}%\n"
-            f"🚀 Speed : {speed:.2f} MB/s"
-        )
-
-    await m.reply_video(
-        out,
-        caption=title,
-        progress=upload_progress
-    )
-
-    await status.delete()
-    os.remove(out)
-
-# ================= RUN =================
-bot.run()
+app.run()
