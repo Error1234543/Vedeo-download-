@@ -1,5 +1,6 @@
 pyrogram
 tgcrypto
 yt-dlp
-flask
 aiohttp
+psutil
+requests
