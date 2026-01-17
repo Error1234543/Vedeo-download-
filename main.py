@@ -6,7 +6,7 @@ import subprocess
 import telebot
 
 # ================= CONFIG =================
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = "8585007953:AAEqP3K3_5y43YRoYc4h99Lzlg9uE-1rAHo"
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
