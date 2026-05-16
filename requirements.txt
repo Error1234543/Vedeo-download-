@@ -1,4 +1,7 @@
-
 pyrogram
 tgcrypto
-yt
+yt-dlp
+python-dotenv
+requests
+aiohttp
+flask
