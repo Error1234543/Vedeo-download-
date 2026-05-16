@@ -1,144 +1,226 @@
 import os
+import re
 import asyncio
-import threading
-import time
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from yt_dlp import YoutubeDL
-from flask import Flask
+from dotenv import load_dotenv
 
-# ================= CONFIG =================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
+load_dotenv()
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ================= PYROGRAM =================
-bot = Client(
-    "stream-downloader",
+app = Client(
+    "downloader-bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-# ================= FLASK (KOYEB HEALTH) =================
-app = Flask(__name__)
+DOWNLOAD_DIR = "downloads"
 
-@app.route("/")
-def home():
-    return "OK", 200
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8000)
+user_data = {}
 
-threading.Thread(target=run_flask, daemon=True).start()
+def sanitize(name):
+    return re.sub(r'[\\/*?:"<>|]', "", name)
 
-# ================= HELPERS =================
-def parse_message(text):
-    if "-n" in text:
-        url, name = text.split("-n", 1)
-        return url.strip(), name.strip()
-    return text.strip(), "Video"
+@app.on_message(filters.command("start"))
+async def start(_, message: Message):
 
-# ================= BOT =================
-@bot.on_message(filters.private & filters.text)
-async def handler(_, m: Message):
-    url, title = parse_message(m.text)
-
-    if not ("mpd" in url or "m3u8" in url):
-        return await m.reply("❌ Invalid stream URL")
-
-    out = f"{DOWNLOAD_DIR}/{title}.mp4"
-
-    status = await m.reply(
-        f"⬇️ Starting download\n"
-        f"🎬 {title}\n"
-        f"⚙️ Engine: yt-dlp"
+    await message.reply_text(
+        "📂 TXT file send karo.\n\n"
+        "Supported:\n"
+        "• MP4\n"
+        "• M3U8\n"
+        "• PDF"
     )
 
-    last_update = 0
+@app.on_message(filters.document)
+async def txt_handler(_, message: Message):
 
-    def hook(d):
-        nonlocal last_update
-        if d["status"] != "downloading":
-            return
-
-        now = time.time()
-        if now - last_update < 1.5:
-            return
-        last_update = now
-
-        total = d.get("total_bytes") or d.get("total_bytes_estimate")
-        downloaded = d.get("downloaded_bytes", 0)
-
-        if not total:
-            return
-
-        percent = downloaded * 100 / total
-        speed = d.get("speed", 0)
-        eta = d.get("eta", 0)
-
-        text = (
-            f"⬇️ Downloading\n"
-            f"🎬 {title}\n"
-            f"📦 {downloaded/1024/1024:.2f} / {total/1024/1024:.2f} MB\n"
-            f"📊 {percent:.1f}%\n"
-            f"🚀 Speed: {speed/1024/1024:.2f} MB/s\n"
-            f"⏳ ETA: {eta}s"
+    if not message.document.file_name.endswith(".txt"):
+        return await message.reply_text(
+            "❌ TXT file send karo."
         )
 
-        asyncio.run_coroutine_threadsafe(
-            status.edit(text),
-            bot.loop
+    txt_file = await message.download()
+
+    with open(txt_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    items = []
+
+    for line in lines:
+
+        line = line.strip()
+
+        if ":" not in line:
+            continue
+
+        try:
+            title, url = line.split(":", 1)
+
+            items.append({
+                "title": title.strip(),
+                "url": url.strip()
+            })
+
+        except:
+            pass
+
+    if not items:
+        return await message.reply_text(
+            "❌ No valid URLs found."
         )
 
-    ydl_opts = {
-        "outtmpl": out,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "progress_hooks": [hook],
-        "concurrent_fragment_downloads": 8,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://physicswallah.live"
-        }
+    user_data[message.chat.id] = {
+        "items": items,
+        "quality": "720",
+        "by": "Unknown"
     }
 
-    try:
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: YoutubeDL(ydl_opts).download([url])
+    msg = f"✅ Total Files: {len(items)}\n\n"
+
+    for i, item in enumerate(items, start=1):
+        msg += f"{i}. {item['title']}\n"
+
+    msg += "\n📥 Starting number send karo."
+
+    await message.reply_text(msg)
+
+@app.on_message(filters.text)
+async def text_handler(_, message: Message):
+
+    chat_id = message.chat.id
+
+    if chat_id not in user_data:
+        return
+
+    data = user_data[chat_id]
+
+    if "start" not in data:
+
+        try:
+            start_num = int(message.text)
+
+            data["start"] = start_num - 1
+
+            return await message.reply_text(
+                "🎥 Quality send karo:\n\n360 / 480 / 720 / 1080"
+            )
+
+        except:
+            return
+
+    if "quality_done" not in data:
+
+        data["quality"] = message.text.strip()
+        data["quality_done"] = True
+
+        return await message.reply_text(
+            "✍️ Downloaded By name send karo."
         )
-    except Exception as e:
-        return await status.edit(f"❌ Download failed\n{e}")
 
-    await status.edit("⬆️ Uploading to Telegram...")
+    if "name_done" not in data:
 
-    start = time.time()
+        data["by"] = message.text.strip()
+        data["name_done"] = True
 
-    async def upload_progress(cur, total):
-        elapsed = time.time() - start
-        speed = (cur / 1024 / 1024) / elapsed if elapsed > 0 else 0
-        percent = cur * 100 / total
-
-        await status.edit(
-            f"⬆️ Uploading\n"
-            f"🎬 {title}\n"
-            f"📊 {percent:.1f}%\n"
-            f"🚀 Speed: {speed:.2f} MB/s"
+        await message.reply_text(
+            "🚀 Download Started..."
         )
 
-    await m.reply_video(
-        out,
-        caption=title,
-        progress=upload_progress
-    )
+        asyncio.create_task(
+            process_queue(message, data)
+        )
 
-    await status.delete()
-    os.remove(out)
+async def process_queue(message, data):
 
-# ================= RUN =================
-bot.run()
+    items = data["items"][data["start"]:]
+    quality = data["quality"]
+    by_name = data["by"]
+
+    for count, item in enumerate(
+        items,
+        start=data["start"] + 1
+    ):
+
+        title = sanitize(item["title"])
+        url = item["url"]
+
+        try:
+
+            if ".pdf" in url.lower():
+
+                pdf_path = os.path.join(
+                    DOWNLOAD_DIR,
+                    f"{title}.pdf"
+                )
+
+                os.system(
+                    f'wget "{url}" -O "{pdf_path}"'
+                )
+
+                await message.reply_document(
+                    pdf_path,
+                    caption=(
+                        f"📄 {title}\n\n"
+                        f"Downloaded By: {by_name}"
+                    )
+                )
+
+                os.remove(pdf_path)
+
+                continue
+
+            status = await message.reply_text(
+                f"⬇️ Downloading:\n{title}"
+            )
+
+            output = os.path.join(
+                DOWNLOAD_DIR,
+                f"{title}.mp4"
+            )
+
+            ydl_opts = {
+                "outtmpl": output,
+                "format": f"best[height<={quality}]",
+                "quiet": True,
+                "merge_output_format": "mp4",
+                "nocheckcertificate": True
+            }
+
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            await status.edit_text(
+                f"⬆️ Uploading:\n{title}"
+            )
+
+            caption = (
+                f"🎬 {title}\n\n"
+                f"Downloaded By: {by_name}"
+            )
+
+            await message.reply_video(
+                output,
+                caption=caption,
+                supports_streaming=True
+            )
+
+            os.remove(output)
+
+            await status.delete()
+
+        except Exception as e:
+
+            await message.reply_text(
+                f"❌ Failed:\n{title}\n\n{e}"
+            )
+
+app.run()
