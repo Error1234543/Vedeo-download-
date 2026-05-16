@@ -1,4 +1,7 @@
-pyrogram==2.0.106
+
+pyrogram
 tgcrypto
 yt-dlp
-flask
+python-dotenv
+requests
+aiohttp
