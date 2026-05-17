@@ -285,7 +285,11 @@ def leaderboard(message):
 
 def run_bot():
     print("Bot Running...")
-    bot.infinity_polling(skip_pending=True)
+    bot.infinity_polling(
+    skip_pending=True,
+    timeout=20,
+    long_polling_timeout=20
+)
 
 if __name__=="__main__":
 
