@@ -1,331 +1,243 @@
-from flask import Flask
-from threading import Thread
+import telebot
+import json
 import os
-import re
-import asyncio
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from yt_dlp import YoutubeDL
-from dotenv import load_dotenv
+# =====================
+# CONFIG
+# =====================
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+OWNER_ID = 7447651332
 
-# =========================
-# LOAD ENV
-# =========================
+bot = telebot.TeleBot(BOT_TOKEN)
 
-load_dotenv()
+questions = []
+active_group_id = None
+user_scores = {}
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# =====================
+# START MESSAGE (PRO UI)
+# =====================
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, f"""
+🔥 Welcome to Smart Quiz Bot
 
-# =========================
-# FLASK WEB SERVER
-# =========================
+📌 Features:
+• /test → Group Quiz System (JSON)
+• /ht → HTML Test Generator
+• Instant Answer Checking
+• Leaderboard System
 
-web_app = Flask(__name__)
+👑 Owner System Enabled
 
-@web_app.route("/")
-def home():
-    return "Bot Running Successfully!"
+🚀 Send /test or /ht to begin
+""")
 
-def run_web():
-    port = int(os.environ.get("PORT", 8000))
-    web_app.run(host="0.0.0.0", port=port)
-
-Thread(target=run_web).start()
-
-# =========================
-# TELEGRAM BOT
-# =========================
-
-app = Client(
-    "downloader-bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
-
-DOWNLOAD_DIR = "downloads"
-
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
-
-user_data = {}
-
-# =========================
-# FUNCTIONS
-# =========================
-
-def sanitize(name):
-    return re.sub(r'[\\/*?:"<>|]', "", name)
-
-# =========================
-# START COMMAND
-# =========================
-
-@app.on_message(filters.command("start"))
-async def start(_, message: Message):
-
-    text = (
-        "🚀 TXT Batch Downloader Bot\n\n"
-        "📂 TXT file send karo.\n\n"
-        "✅ Supported:\n"
-        "• MP4\n"
-        "• M3U8\n"
-        "• PDF\n\n"
-        "📝 TXT Format:\n"
-        "Lecture 1:https://example.com/video.m3u8"
-    )
-
-    await message.reply_text(text)
-
-# =========================
-# TXT FILE HANDLER
-# =========================
-
-@app.on_message(filters.document)
-async def txt_handler(_, message: Message):
-
-    if not message.document.file_name.endswith(".txt"):
-        return await message.reply_text(
-            "❌ Please send TXT file only."
-        )
-
-    txt_file = await message.download()
-
-    with open(txt_file, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    items = []
-
-    for line in lines:
-
-        line = line.strip()
-
-        if ":" not in line:
-            continue
-
-        try:
-            title, url = line.split(":", 1)
-
-            items.append({
-                "title": title.strip(),
-                "url": url.strip()
-            })
-
-        except:
-            pass
-
-    if not items:
-        return await message.reply_text(
-            "❌ No valid URLs found."
-        )
-
-    total_videos = 0
-    total_pdfs = 0
-
-    for item in items:
-
-        if ".pdf" in item["url"].lower():
-            total_pdfs += 1
-        else:
-            total_videos += 1
-
-    user_data[message.chat.id] = {
-        "items": items,
-        "quality": "720",
-        "by": "Unknown"
-    }
-
-    msg = (
-        f"✅ TXT Loaded Successfully\n\n"
-        f"🎬 Videos: {total_videos}\n"
-        f"📄 PDFs: {total_pdfs}\n"
-        f"📦 Total: {len(items)}\n\n"
-    )
-
-    for i, item in enumerate(items, start=1):
-        msg += f"{i}. {item['title']}\n"
-
-    msg += "\n📥 Starting number send karo."
-
-    await message.reply_text(msg)
-
-# =========================
-# TEXT HANDLER
-# =========================
-
-@app.on_message(filters.text)
-async def text_handler(_, message: Message):
-
-    chat_id = message.chat.id
-
-    if chat_id not in user_data:
+# =====================
+# TEST COMMAND
+# =====================
+@bot.message_handler(commands=['test'])
+def test_cmd(message):
+    if message.from_user.id != OWNER_ID:
         return
 
-    data = user_data[chat_id]
+    bot.send_message(message.chat.id, "📩 Send JSON file for quiz system")
 
-    # START NUMBER
+# =====================
+# HT COMMAND
+# =====================
+@bot.message_handler(commands=['ht'])
+def ht_cmd(message):
+    if message.from_user.id != OWNER_ID:
+        return
 
-    if "start" not in data:
+    bot.send_message(message.chat.id, "📩 Send JSON file for HTML test generation")
 
-        try:
+# =====================
+# JSON HANDLER
+# =====================
+@bot.message_handler(content_types=['document'])
+def handle_json(message):
+    global questions
 
-            start_num = int(message.text)
+    if message.from_user.id != OWNER_ID:
+        return
 
-            data["start"] = start_num - 1
+    file = bot.get_file(message.document.file_id)
+    data = bot.download_file(file.file_path)
 
-            return await message.reply_text(
-                "🎥 Quality send karo:\n\n"
-                "360 / 480 / 720 / 1080"
+    try:
+        questions = json.loads(data)
+    except:
+        bot.reply_to(message, "❌ Invalid JSON")
+        return
+
+    bot.send_message(message.chat.id, "📌 JSON loaded successfully!\n👉 Now send Group ID like -100xxxx")
+
+# =====================
+# GROUP ID SET + START QUIZ
+# =====================
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("-100"))
+def set_group(message):
+    global active_group_id
+
+    active_group_id = message.text
+
+    bot.send_message(message.chat.id, "🚀 Starting quiz in group...")
+    send_question(0)
+
+# =====================
+# SEND QUESTION
+# =====================
+def send_question(index):
+    if index >= len(questions):
+        bot.send_message(active_group_id, "🏁 Quiz Finished!")
+        return
+
+    q = questions[index]
+
+    text = f"❓ Q{q['question_number']}\n\n{q['question']}"
+
+    markup = telebot.types.InlineKeyboardMarkup()
+
+    for opt in q['options']:
+        markup.add(
+            telebot.types.InlineKeyboardButton(
+                opt,
+                callback_data=f"{index}|{opt}"
             )
-
-        except:
-            return
-
-    # QUALITY
-
-    if "quality_done" not in data:
-
-        data["quality"] = message.text.strip()
-        data["quality_done"] = True
-
-        return await message.reply_text(
-            "✍️ Downloaded By name send karo."
         )
 
-    # NAME
+    bot.send_message(active_group_id, text, reply_markup=markup)
 
-    if "name_done" not in data:
+# =====================
+# ANSWER CHECK
+# =====================
+@bot.callback_query_handler(func=lambda call: True)
+def check_answer(call):
+    global questions
 
-        data["by"] = message.text.strip()
-        data["name_done"] = True
+    index, selected = call.data.split("|")
+    index = int(index)
 
-        await message.reply_text(
-            "🚀 Download Started..."
-        )
+    correct = questions[index]['answer']
 
-        asyncio.create_task(
-            process_queue(message, data)
-        )
+    user_id = call.from_user.id
 
-# =========================
-# PROCESS QUEUE
-# =========================
+    if user_id not in user_scores:
+        user_scores[user_id] = 0
 
-async def process_queue(message, data):
+    if selected == correct:
+        user_scores[user_id] += 1
+        bot.answer_callback_query(call.id, "✔ Correct")
+    else:
+        bot.answer_callback_query(call.id, f"❌ Wrong | Ans: {correct}")
 
-    items = data["items"][data["start"]:]
-    quality = data["quality"]
-    by_name = data["by"]
+    # next question
+    send_question(index + 1)
 
-    for count, item in enumerate(
-        items,
-        start=data["start"] + 1
-    ):
+# =====================
+# LEADERBOARD
+# =====================
+@bot.message_handler(commands=['leaderboard'])
+def leaderboard(message):
+    if not user_scores:
+        bot.send_message(message.chat.id, "No scores yet")
+        return
 
-        title = sanitize(item["title"])
-        url = item["url"]
+    text = "🏆 LEADERBOARD\n\n"
 
-        try:
+    sorted_users = sorted(user_scores.items(), key=lambda x: x[1], reverse=True)
 
-            # =========================
-            # PDF DOWNLOAD
-            # =========================
+    rank = 1
+    for uid, score in sorted_users:
+        text += f"{rank}. User {uid} - {score}\n"
+        rank += 1
 
-            if ".pdf" in url.lower():
+    bot.send_message(message.chat.id, text)
 
-                status = await message.reply_text(
-                    f"📄 Downloading PDF:\n{title}"
-                )
+# =====================
+# HTML GENERATOR
+# =====================
+def generate_html(data):
+    import json
 
-                pdf_path = os.path.join(
-                    DOWNLOAD_DIR,
-                    f"{title}.pdf"
-                )
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Quiz Test</title>
+<style>
+body {{ font-family: Arial; padding: 20px; }}
+.card {{ border:1px solid #ddd; padding:15px; margin:10px; }}
+button {{ padding:10px; margin:5px; }}
+</style>
+</head>
+<body>
 
-                os.system(
-                    f'wget "{url}" -O "{pdf_path}"'
-                )
+<h2>📘 Online Test</h2>
+<div id="quiz"></div>
 
-                await status.edit_text(
-                    f"⬆️ Uploading PDF:\n{title}"
-                )
+<script>
+const questions = {json.dumps(data)};
 
-                await message.reply_document(
-                    pdf_path,
-                    caption=(
-                        f"📄 {title}\n\n"
-                        f"Downloaded By: {by_name}"
-                    )
-                )
+let index = 0;
+let score = 0;
 
-                os.remove(pdf_path)
+function loadQ(){{
+    if(index >= questions.length){{
+        document.getElementById("quiz").innerHTML =
+        "<h2>Result: " + score + "/" + questions.length + "</h2>";
+        return;
+    }}
 
-                await status.delete()
+    let q = questions[index];
+    let html = `<div class='card'>
+    <h3>Q${{q.question_number}}</h3>
+    <p>${{q.question}}</p>`;
 
-                continue
+    q.options.forEach(opt => {{
+        html += `<button onclick="check('${{opt}}','${{q.answer}}')">${{opt}}</button><br>`;
+    }});
 
-            # =========================
-            # VIDEO DOWNLOAD
-            # =========================
+    html += "</div>";
 
-            status = await message.reply_text(
-                f"⬇️ Downloading:\n{title}"
-            )
+    document.getElementById("quiz").innerHTML = html;
+}}
 
-            output = os.path.join(
-                DOWNLOAD_DIR,
-                f"{title}.mp4"
-            )
+function check(sel, ans){{
+    if(sel === ans) score++;
+    index++;
+    loadQ();
+}}
 
-            ydl_opts = {
-                "outtmpl": output,
-                "format": f"best[height<={quality}]",
-                "quiet": True,
-                "merge_output_format": "mp4",
-                "nocheckcertificate": True
-            }
+loadQ();
+</script>
 
-            with YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+</body>
+</html>
+"""
 
-            await status.edit_text(
-                f"⬆️ Uploading:\n{title}"
-            )
+# =====================
+# HT JSON HANDLER
+# =====================
+@bot.message_handler(content_types=['document'])
+def html_json(message):
+    if message.from_user.id != OWNER_ID:
+        return
 
-            caption = (
-                f"🎬 {title}\n\n"
-                f"Downloaded By: {by_name}"
-            )
+    file = bot.get_file(message.document.file_id)
+    data = json.loads(bot.download_file(file.file_path))
 
-            await message.reply_video(
-                output,
-                caption=caption,
-                supports_streaming=True
-            )
+    html = generate_html(data)
 
-            os.remove(output)
+    with open("test.html", "w", encoding="utf-8") as f:
+        f.write(html)
 
-            await status.delete()
+    bot.send_document(message.chat.id, open("test.html", "rb"))
 
-        except Exception as e:
-
-            await message.reply_text(
-                f"❌ Failed:\n\n"
-                f"📁 {title}\n\n"
-                f"⚠️ Error:\n{e}"
-            )
-
-    await message.reply_text(
-        "✅ All Downloads Completed."
-    )
-
-# =========================
+# =====================
 # RUN BOT
-# =========================
-
-print("🚀 Bot Started Successfully")
-
-app.run()
+# =====================
+print("Bot is running...")
+bot.infinity_polling()
