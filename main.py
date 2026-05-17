@@ -39,8 +39,7 @@ def health():
     return {"status": "ok"}
 
 def run_flask():
-    app.run(host="0.0.0.0", port=8000)
-
+    app.run(host="0.0.0.0", port=8000, debug=False, use_reloader=False)
 # =====================
 # START
 # =====================
