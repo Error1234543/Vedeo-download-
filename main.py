@@ -8,7 +8,7 @@ from flask import Flask, request
 # CONFIG
 # =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = 7447651332
+OWNER_ID = 8226637107
 
 # IMPORTANT: replace with your koyeb url
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
