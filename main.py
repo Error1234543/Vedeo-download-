@@ -1,8 +1,8 @@
+
 import telebot
 import json
 import os
-from flask import Flask
-import threading
+from flask import Flask, request
 
 # =====================
 # CONFIG
@@ -10,19 +10,21 @@ import threading
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = 7447651332
 
+# IMPORTANT: replace with your koyeb url
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # =====================
-# STORAGE
+# DATA
 # =====================
 questions = []
 active_group = None
 scores = {}
-
 js_buffer = {}
 
 # =====================
-# FLASK (KOYEB HEALTH CHECK)
+# FLASK APP
 # =====================
 app = Flask(__name__)
 
@@ -34,13 +36,15 @@ def home():
 def health():
     return {"status": "ok"}
 
-def run_flask():
-    app.run(
-        host="0.0.0.0",
-        port=8000,
-        debug=False,
-        use_reloader=False
-    )
+# =====================
+# TELEGRAM WEBHOOK ROUTE
+# =====================
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
 
 # =====================
 # START
@@ -48,15 +52,15 @@ def run_flask():
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(message.chat.id, """
-🔥 PRO QUIZ BOT
+🔥 PRO WEBHOOK QUIZ BOT
 
 📌 Commands:
-/test - Group Quiz (JSON)
-/ht - HTML Generator
-/js - JSON Builder
+/test - Quiz system
+/ht - HTML generator
+/js - JSON builder
 /leaderboard - Scores
 
-🚀 Stable Version Active
+⚡ Webhook mode active (no crashes)
 """)
 
 # =====================
@@ -66,8 +70,7 @@ def start(message):
 def test_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
-
-    bot.send_message(message.chat.id, "📩 Send JSON file for quiz")
+    bot.send_message(message.chat.id, "📩 Send JSON file")
 
 @bot.message_handler(content_types=['document'])
 def load_json(message):
@@ -85,17 +88,14 @@ def load_json(message):
         bot.send_message(message.chat.id, "❌ Invalid JSON")
         return
 
-    bot.send_message(message.chat.id, "✅ JSON Loaded\n👉 Now send Group ID")
+    bot.send_message(message.chat.id, "✅ JSON loaded\n👉 Send Group ID")
 
-# =====================
-# GROUP ID SET
-# =====================
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("-100"))
 def set_group(message):
     global active_group
 
     active_group = message.text
-    bot.send_message(message.chat.id, "🚀 Starting Quiz...")
+    bot.send_message(message.chat.id, "🚀 Starting quiz...")
     send_question(0)
 
 # =====================
@@ -118,33 +118,27 @@ def send_question(index):
     markup = telebot.types.InlineKeyboardMarkup()
 
     for opt in q['options']:
-        safe_opt = str(opt)[:30]
+        safe = str(opt)[:30]
 
         markup.add(
             telebot.types.InlineKeyboardButton(
-                safe_opt,
-                callback_data=f"{index}|{safe_opt}"
+                safe,
+                callback_data=f"{index}|{safe}"
             )
         )
 
     bot.send_message(active_group, text, reply_markup=markup)
 
 # =====================
-# ANSWER HANDLER (FIXED)
+# ANSWER CHECK
 # =====================
 @bot.callback_query_handler(func=lambda call: True)
 def answer(call):
     global questions
 
     try:
-        data = call.data.split("|")
-
-        if len(data) != 2:
-            bot.answer_callback_query(call.id, "Invalid")
-            return
-
-        index = int(data[0])
-        selected = data[1]
+        index, selected = call.data.split("|")
+        index = int(index)
 
         if index >= len(questions):
             bot.answer_callback_query(call.id, "Finished")
@@ -165,119 +159,8 @@ def answer(call):
 
         send_question(index + 1)
 
-    except Exception as e:
-        print("Callback Error:", e)
+    except:
         bot.answer_callback_query(call.id, "Error")
-
-# =====================
-# HT SYSTEM (HTML)
-# =====================
-@bot.message_handler(commands=['ht'])
-def ht_cmd(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    bot.send_message(message.chat.id, "📩 Send JSON for HTML")
-
-@bot.message_handler(content_types=['document'])
-def html_generator(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    file = bot.get_file(message.document.file_id)
-    data = json.loads(bot.download_file(file.file_path))
-
-    html = generate_html(data)
-
-    with open("test.html", "w", encoding="utf-8") as f:
-        f.write(html)
-
-    bot.send_document(message.chat.id, open("test.html", "rb"))
-
-def generate_html(data):
-    import json
-
-    return f"""
-<!DOCTYPE html>
-<html>
-<head>
-<title>Quiz Test</title>
-</head>
-<body>
-
-<h2>Online Test</h2>
-<div id="quiz"></div>
-
-<script>
-const q = {json.dumps(data)};
-let i = 0;
-let score = 0;
-
-function load(){{
-if(i >= q.length){{
-document.getElementById('quiz').innerHTML = "Result: " + score;
-return;
-}}
-
-let x = q[i];
-let h = `<h3>${{x.question}}</h3>`;
-
-x.options.forEach(o => {{
-h += `<button onclick="check('${{o}}','${{x.answer}}')">${{o}}</button><br>`;
-}});
-
-document.getElementById('quiz').innerHTML = h;
-}}
-
-function check(s,a){{
-if(s === a) score++;
-i++;
-load();
-}}
-
-load();
-</script>
-
-</body>
-</html>
-"""
-
-# =====================
-# JS SYSTEM
-# =====================
-@bot.message_handler(commands=['js'])
-def js_cmd(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    js_buffer[message.from_user.id] = []
-    bot.send_message(message.chat.id, "📩 Send lines then /done")
-
-@bot.message_handler(func=lambda m: True)
-def collect_js(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    if message.from_user.id in js_buffer:
-        if message.text.startswith("/"):
-            return
-        js_buffer[message.from_user.id].append(message.text)
-
-@bot.message_handler(commands=['done'])
-def js_done(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    data = js_buffer.get(message.from_user.id, [])
-
-    result = [{"id": i+1, "data": d} for i, d in enumerate(data)]
-
-    with open("output.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=4, ensure_ascii=False)
-
-    bot.send_document(message.chat.id, open("output.json", "rb"))
-
-    js_buffer[message.from_user.id] = []
 
 # =====================
 # LEADERBOARD
@@ -299,19 +182,46 @@ def leaderboard(message):
     bot.send_message(message.chat.id, text)
 
 # =====================
-# BOT START
+# JS + HT (simple safe)
 # =====================
-def run_bot():
-    print("Bot Running...")
-    bot.infinity_polling(
-        skip_pending=True,
-        timeout=20,
-        long_polling_timeout=20
-    )
+@bot.message_handler(commands=['js'])
+def js_cmd(message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    js_buffer[message.from_user.id] = []
+    bot.send_message(message.chat.id, "📩 Send lines then /done")
+
+@bot.message_handler(commands=['done'])
+def js_done(message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    data = js_buffer.get(message.from_user.id, [])
+
+    result = [{"id": i+1, "data": d} for i, d in enumerate(data)]
+
+    with open("output.json", "w") as f:
+        json.dump(result, f, indent=4)
+
+    bot.send_document(message.chat.id, open("output.json", "rb"))
 
 # =====================
-# MAIN
+# WEBHOOK SETUP AUTO
+# =====================
+def set_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+# =====================
+# RUN FLASK
+# =====================
+def run():
+    set_webhook()
+    app.run(host="0.0.0.0", port=8000)
+
+# =====================
+# START
 # =====================
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    run_bot()
+    run()
