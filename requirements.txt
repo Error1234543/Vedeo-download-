@@ -1,7 +1,1 @@
-pyrogram
-tgcrypto
-yt-dlp
-python-dotenv
-requests
-aiohttp
-flask
+pyTelegramBotAPI
