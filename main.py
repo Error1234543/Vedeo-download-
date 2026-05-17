@@ -1,7 +1,6 @@
 import telebot
 import json
 import os
-import time
 from flask import Flask, request
 
 # =====================
@@ -14,22 +13,21 @@ OWNER_ID = 8226637107
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # =====================
-# DATA
+# DATA STORAGE
 # =====================
-exams = {}
-active_exam = None
-active_group = None
+questions = []
 scores = {}
-timer_data = {}
+js_buffer = {}
+user_mode = {}
 
 # =====================
-# FLASK
+# FLASK APP
 # =====================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "BOT RUNNING 🚀"
+    return "🔥 PRO BOT RUNNING"
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
@@ -38,118 +36,59 @@ def webhook():
     return "OK"
 
 # =====================
-# START
+# START INFO (optional but stable)
 # =====================
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(message.chat.id,
 """
-🔥 ULTRA PRO EXAM BOT
+🔥 PRO WEBHOOK QUIZ BOT
 
-/startquiz → Start exam
-/stop → Stop exam
-/reset → Reset leaderboard
-/status → Bot status
+📌 Commands:
+/test - Quiz system
+/ht - HTML generator
+/js - JSON builder
+/leaderboard - Scores
 
-/test → Load quiz JSON
-/ht → HTML generator
-/js → JSON builder
-/leaderboard → Scores
-
-⚡ Advanced Exam System Active
+⚡ Webhook mode active (stable)
 """)
 
 # =====================
-# STATUS
-# =====================
-@bot.message_handler(commands=['status'])
-def status(message):
-    bot.send_message(message.chat.id,
-f"""
-📊 BOT STATUS
-
-Active Exam: {active_exam}
-Active Group: {active_group}
-Users: {len(scores)}
-""")
-
-# =====================
-# RESET SCORES
-# =====================
-@bot.message_handler(commands=['reset'])
-def reset(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    scores.clear()
-    bot.send_message(message.chat.id, "♻ Leaderboard Reset Done")
-
-# =====================
-# START QUIZ IN GROUP
-# =====================
-@bot.message_handler(commands=['startquiz'])
-def startquiz(message):
-    global active_group, active_exam
-
-    if message.from_user.id != OWNER_ID:
-        return
-
-    active_group = message.chat.id
-    active_exam = "default"
-
-    bot.send_message(message.chat.id, "🚀 Quiz Started in Group")
-    send_question(0)
-
-# =====================
-# STOP QUIZ
-# =====================
-@bot.message_handler(commands=['stop'])
-def stop(message):
-    global active_exam, active_group
-
-    if message.from_user.id != OWNER_ID:
-        return
-
-    active_exam = None
-    active_group = None
-
-    bot.send_message(message.chat.id, "⛔ Quiz Stopped")
-
-# =====================
-# TEST LOAD
+# /test → QUIZ MODE
 # =====================
 @bot.message_handler(commands=['test'])
 def test_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    bot.send_message(message.chat.id, "📩 Send JSON file")
+    user_mode[message.from_user.id] = "quiz"
+    bot.send_message(message.chat.id, "📩 Send Quiz JSON file")
 
 # =====================
-# HT
+# /ht → HTML MODE
 # =====================
 @bot.message_handler(commands=['ht'])
 def ht_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    bot.send_message(message.chat.id, "📩 Send JSON for HTML")
+    user_mode[message.from_user.id] = "html"
+    bot.send_message(message.chat.id, "📩 Send JSON file for HTML generation")
 
 # =====================
-# JS
+# /js → JSON BUILDER MODE
 # =====================
-js_buffer = {}
-
 @bot.message_handler(commands=['js'])
 def js_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
     js_buffer[message.from_user.id] = []
-    bot.send_message(message.chat.id, "📩 Send text then /done")
+    user_mode[message.from_user.id] = "js"
+    bot.send_message(message.chat.id, "📩 Send text lines, then /done")
 
 # =====================
-# DONE
+# /done → CREATE JSON
 # =====================
 @bot.message_handler(commands=['done'])
 def done(message):
@@ -158,94 +97,124 @@ def done(message):
 
     data = js_buffer.get(message.from_user.id, [])
 
-    out = [{"id": i+1, "data": d} for i, d in enumerate(data)]
+    result = [{"id": i+1, "data": d} for i, d in enumerate(data)]
 
-    with open("output.json", "w") as f:
-        json.dump(out, f, indent=4)
+    with open("output.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=4, ensure_ascii=False)
 
     bot.send_document(message.chat.id, open("output.json", "rb"))
 
 # =====================
-# SCORES RESET + INIT
+# TEXT COLLECTOR FOR /js
 # =====================
-def add_score(user, mark):
-    if user not in scores:
-        scores[user] = 0
-    scores[user] += mark
+@bot.message_handler(func=lambda m: True, content_types=['text'])
+def collect_text(message):
+
+    if message.from_user.id in js_buffer:
+        js_buffer[message.from_user.id].append(message.text)
 
 # =====================
-# LOAD JSON
+# DOCUMENT HANDLER (TEST + HT FIXED)
 # =====================
-questions = []
-
 @bot.message_handler(content_types=['document'])
-def load_file(message):
+def handle_doc(message):
     global questions
 
     if message.from_user.id != OWNER_ID:
         return
 
+    mode = user_mode.get(message.from_user.id)
+
     file = bot.get_file(message.document.file_id)
     data = bot.download_file(file.file_path)
 
-    parsed = json.loads(data)
-
-    if isinstance(parsed, list) and "question" in parsed[0]:
-        questions = parsed
-        bot.send_message(message.chat.id, "✅ Quiz Loaded")
-
-# =====================
-# SEND QUESTION (TIMER + NEGATIVE MARK)
-# =====================
-def send_question(index):
-    global questions, active_group
-
-    if not active_group:
-        return
-
-    if index >= len(questions):
-        bot.send_message(active_group, "🏁 Exam Finished")
-        return
-
-    q = questions[index]
-
-    text = f"⏳ Q{index+1}\n{q['question']}\n\n⚡ Timer: 30 sec"
-
-    markup = telebot.types.InlineKeyboardMarkup()
-
-    for opt in q['options']:
-        markup.add(
-            telebot.types.InlineKeyboardButton(opt[:30], callback_data=f"{index}|{opt}")
-        )
-
-    bot.send_message(active_group, text, reply_markup=markup)
-
-    timer_data[index] = time.time()
-
-# =====================
-# ANSWER CHECK (NEGATIVE MARKING)
-# =====================
-@bot.callback_query_handler(func=lambda call: True)
-def check_answer(call):
     try:
-        index, selected = call.data.split("|")
-        index = int(index)
-
-        correct = questions[index]['answer']
-
-        user = call.from_user.id
-
-        if selected == correct:
-            add_score(user, 1)
-            bot.answer_callback_query(call.id, "✔ Correct +1")
-        else:
-            add_score(user, -0.25)
-            bot.answer_callback_query(call.id, f"❌ Wrong | Ans: {correct}")
-
-        send_question(index + 1)
-
+        parsed = json.loads(data)
     except:
-        bot.answer_callback_query(call.id, "Error")
+        bot.send_message(message.chat.id, "❌ Invalid JSON")
+        return
+
+    # ================= QUIZ =================
+    if mode == "quiz":
+        questions = parsed
+        bot.send_message(message.chat.id, "✅ Quiz Loaded Successfully")
+
+    # ================= HTML =================
+    elif mode == "html":
+        html = generate_html(parsed)
+
+        with open("quiz.html", "w", encoding="utf-8") as f:
+            f.write(html)
+
+        bot.send_document(message.chat.id, open("quiz.html", "rb"))
+
+    user_mode[message.from_user.id] = None
+
+# =====================
+# HTML GENERATOR (PRO DESIGN)
+# =====================
+def generate_html(data):
+
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>PRO QUIZ</title>
+<style>
+body {
+    font-family: Arial;
+    background: #0f172a;
+    color: white;
+    padding: 20px;
+}
+
+h2 {
+    text-align: center;
+}
+
+.card {
+    background: #1e293b;
+    padding: 15px;
+    margin: 15px 0;
+    border-radius: 12px;
+}
+
+.question {
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+.option {
+    background: #334155;
+    padding: 10px;
+    margin: 6px 0;
+    border-radius: 8px;
+    word-wrap: break-word;
+}
+
+.option:hover {
+    background: #475569;
+}
+</style>
+</head>
+<body>
+
+<h2>🔥 PRO QUIZ TEST</h2>
+"""
+
+    for q in data:
+        html += '<div class="card">'
+        html += f'<div class="question">{q.get("question","")}</div>'
+
+        for opt in q.get("options", []):
+            html += f'<div class="option">{opt}</div>'
+
+        html += '</div>'
+
+    html += "</body></html>"
+    return html
 
 # =====================
 # LEADERBOARD
@@ -253,17 +222,21 @@ def check_answer(call):
 @bot.message_handler(commands=['leaderboard'])
 def leaderboard(message):
 
+    if not scores:
+        bot.send_message(message.chat.id, "No scores yet")
+        return
+
     text = "🏆 LEADERBOARD\n\n"
 
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     for i, (u, s) in enumerate(sorted_scores, 1):
-        text += f"{i}. {u} → {s}\n"
+        text += f"{i}. User {u} - {s}\n"
 
     bot.send_message(message.chat.id, text)
 
 # =====================
-# WEBHOOK
+# WEBHOOK SETUP
 # =====================
 def set_webhook():
     bot.remove_webhook()
