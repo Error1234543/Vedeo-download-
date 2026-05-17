@@ -6,8 +6,8 @@ import threading
 # =====================
 # CONFIG
 # =====================
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-OWNER_ID = 7447651332
+BOT_TOKEN = "8527135566:AAGdKxmmK_-a4t-CCQ0t69jdOJu_Kv178sM"
+OWNER_ID = 8226637107
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
