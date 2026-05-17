@@ -1,6 +1,7 @@
 import telebot
 import json
 import os
+import time
 from flask import Flask, request
 
 # =====================
@@ -18,16 +19,16 @@ bot = telebot.TeleBot(BOT_TOKEN)
 questions = []
 scores = {}
 js_buffer = {}
-user_mode = {}
+user_state = {}
 
 # =====================
-# FLASK APP
+# FLASK
 # =====================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🔥 PRO BOT RUNNING"
+    return "🔥 BOT RUNNING"
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
@@ -36,47 +37,44 @@ def webhook():
     return "OK"
 
 # =====================
-# START INFO (optional but stable)
+# START
 # =====================
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(message.chat.id,
 """
-🔥 PRO WEBHOOK QUIZ BOT
+🔥 PRO EXAM BOT
 
-📌 Commands:
-/test - Quiz system
-/ht - HTML generator
-/js - JSON builder
-/leaderboard - Scores
-
-⚡ Webhook mode active (stable)
+/test → Telegram quiz
+/ht → HTML exam
+/js → JSON builder
+/leaderboard → scores
 """)
 
 # =====================
-# /test → QUIZ MODE
+# /test (TELEGRAM QUIZ MODE)
 # =====================
 @bot.message_handler(commands=['test'])
 def test_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    user_mode[message.from_user.id] = "quiz"
+    user_state[message.from_user.id] = "quiz"
     bot.send_message(message.chat.id, "📩 Send Quiz JSON file")
 
 # =====================
-# /ht → HTML MODE
+# /ht (HTML MODE)
 # =====================
 @bot.message_handler(commands=['ht'])
 def ht_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    user_mode[message.from_user.id] = "html"
-    bot.send_message(message.chat.id, "📩 Send JSON file for HTML generation")
+    user_state[message.from_user.id] = "html"
+    bot.send_message(message.chat.id, "📩 Send JSON for HTML exam")
 
 # =====================
-# /js → JSON BUILDER MODE
+# /js (TEXT TO JSON)
 # =====================
 @bot.message_handler(commands=['js'])
 def js_cmd(message):
@@ -84,11 +82,11 @@ def js_cmd(message):
         return
 
     js_buffer[message.from_user.id] = []
-    user_mode[message.from_user.id] = "js"
-    bot.send_message(message.chat.id, "📩 Send text lines, then /done")
+    user_state[message.from_user.id] = "js"
+    bot.send_message(message.chat.id, "📩 Send text lines then /done")
 
 # =====================
-# /done → CREATE JSON
+# /done
 # =====================
 @bot.message_handler(commands=['done'])
 def done(message):
@@ -97,24 +95,23 @@ def done(message):
 
     data = js_buffer.get(message.from_user.id, [])
 
-    result = [{"id": i+1, "data": d} for i, d in enumerate(data)]
+    out = [{"id": i+1, "data": d} for i, d in enumerate(data)]
 
     with open("output.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=4, ensure_ascii=False)
+        json.dump(out, f, indent=4, ensure_ascii=False)
 
     bot.send_document(message.chat.id, open("output.json", "rb"))
 
 # =====================
-# TEXT COLLECTOR FOR /js
+# TEXT COLLECTOR
 # =====================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
-def collect_text(message):
-
+def collect(message):
     if message.from_user.id in js_buffer:
         js_buffer[message.from_user.id].append(message.text)
 
 # =====================
-# DOCUMENT HANDLER (TEST + HT FIXED)
+# DOCUMENT HANDLER (MAIN LOGIC FIXED)
 # =====================
 @bot.message_handler(content_types=['document'])
 def handle_doc(message):
@@ -122,8 +119,6 @@ def handle_doc(message):
 
     if message.from_user.id != OWNER_ID:
         return
-
-    mode = user_mode.get(message.from_user.id)
 
     file = bot.get_file(message.document.file_id)
     data = bot.download_file(file.file_path)
@@ -134,6 +129,8 @@ def handle_doc(message):
         bot.send_message(message.chat.id, "❌ Invalid JSON")
         return
 
+    mode = user_state.get(message.from_user.id)
+
     # ================= QUIZ =================
     if mode == "quiz":
         questions = parsed
@@ -143,78 +140,154 @@ def handle_doc(message):
     elif mode == "html":
         html = generate_html(parsed)
 
-        with open("quiz.html", "w", encoding="utf-8") as f:
+        with open("exam.html", "w", encoding="utf-8") as f:
             f.write(html)
 
-        bot.send_document(message.chat.id, open("quiz.html", "rb"))
+        bot.send_document(message.chat.id, open("exam.html", "rb"))
 
-    user_mode[message.from_user.id] = None
+    user_state[message.from_user.id] = None
 
 # =====================
-# HTML GENERATOR (PRO DESIGN)
+# 🔥 PRO HTML (WITH TIMER + RESULT + REVIEW)
 # =====================
 def generate_html(data):
 
-    html = """
+    return f"""
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>PRO QUIZ</title>
+<title>PRO EXAM</title>
+
 <style>
-body {
+body {{
     font-family: Arial;
     background: #0f172a;
     color: white;
     padding: 20px;
-}
+}}
 
-h2 {
-    text-align: center;
-}
-
-.card {
+.card {{
     background: #1e293b;
     padding: 15px;
     margin: 15px 0;
     border-radius: 12px;
-}
+}}
 
-.question {
-    font-size: 18px;
-    font-weight: bold;
-    margin-bottom: 10px;
-}
-
-.option {
+.option {{
     background: #334155;
     padding: 10px;
-    margin: 6px 0;
+    margin: 5px 0;
     border-radius: 8px;
-    word-wrap: break-word;
-}
+    cursor: pointer;
+}}
 
-.option:hover {
+.option:hover {{
     background: #475569;
-}
+}}
+
+#timer {{
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: red;
+    padding: 10px;
+    border-radius: 8px;
+    font-weight: bold;
+}}
 </style>
 </head>
+
 <body>
 
-<h2>🔥 PRO QUIZ TEST</h2>
+<div id="timer">⏳ 30</div>
+<h2>🔥 PRO ONLINE EXAM</h2>
+
+<div id="quiz"></div>
+
+<script>
+let questions = {json.dumps(data)};
+let index = 0;
+let score = 0;
+let wrongList = [];
+let time = 30;
+
+function load() {{
+    let q = questions[index];
+
+    let html = `<div class="card">
+        <h3>${{q.question}}</h3>`;
+
+    q.options.forEach(opt => {{
+        html += `<div class="option" onclick="check('${{opt}}')">${{opt}}</div>`;
+    }});
+
+    html += "</div>";
+
+    document.getElementById("quiz").innerHTML = html;
+}}
+
+function check(ans) {{
+    let correct = questions[index].answer;
+
+    if(ans === correct) {{
+        score++;
+    }} else {{
+        wrongList.push({{
+            q: questions[index].question,
+            your: ans,
+            correct: correct
+        }});
+    }}
+
+    index++;
+
+    if(index < questions.length) {{
+        load();
+        time = 30;
+    }} else {{
+        showResult();
+    }}
+}}
+
+function showResult() {{
+    let html = `<h2>🏁 RESULT</h2>
+    <h3>Score: ${{score}} / ${{questions.length}}</h3>
+    <h3>Wrong Answers: ${{wrongList.length}}</h3>`;
+
+    wrongList.forEach(w => {{
+        html += `<div class="card">
+            <b>Q:</b> ${{w.q}}<br>
+            <b>Your:</b> ${{w.your}}<br>
+            <b>Correct:</b> ${{w.correct}}
+        </div>`;
+    }});
+
+    document.getElementById("quiz").innerHTML = html;
+}}
+
+setInterval(() => {{
+    time--;
+    document.getElementById("timer").innerText = "⏳ " + time;
+
+    if(time <= 0) {{
+        index++;
+        time = 30;
+
+        if(index < questions.length) {{
+            load();
+        }} else {{
+            showResult();
+        }}
+    }}
+}},1000);
+
+load();
+</script>
+
+</body>
+</html>
 """
-
-    for q in data:
-        html += '<div class="card">'
-        html += f'<div class="question">{q.get("question","")}</div>'
-
-        for opt in q.get("options", []):
-            html += f'<div class="option">{opt}</div>'
-
-        html += '</div>'
-
-    html += "</body></html>"
-    return html
 
 # =====================
 # LEADERBOARD
@@ -228,23 +301,18 @@ def leaderboard(message):
 
     text = "🏆 LEADERBOARD\n\n"
 
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-    for i, (u, s) in enumerate(sorted_scores, 1):
-        text += f"{i}. User {u} - {s}\n"
+    for i,(u,s) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True),1):
+        text += f"{i}. {u} → {s}\n"
 
     bot.send_message(message.chat.id, text)
 
 # =====================
-# WEBHOOK SETUP
+# WEBHOOK
 # =====================
 def set_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
 
-# =====================
-# RUN
-# =====================
 def run():
     set_webhook()
     app.run(host="0.0.0.0", port=8000)
