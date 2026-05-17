@@ -1,36 +1,56 @@
 import telebot
 import json
-import os
+from flask import Flask
+import threading
 
 # =====================
 # CONFIG
 # =====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 OWNER_ID = 7447651332
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 questions = []
-active_group_id = None
-user_scores = {}
+active_group = None
+scores = {}
 
 # =====================
-# START MESSAGE (PRO UI)
+# FLASK HEALTH CHECK
+# =====================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot Alive 🚀"
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
+
+# =====================
+# GLOBAL JS STORAGE
+# =====================
+js_buffer = {}
+
+# =====================
+# START
 # =====================
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, f"""
-🔥 Welcome to Smart Quiz Bot
+    bot.send_message(message.chat.id, """
+🔥 Smart Quiz Bot
 
-📌 Features:
-• /test → Group Quiz System (JSON)
-• /ht → HTML Test Generator
-• Instant Answer Checking
-• Leaderboard System
+📌 Commands:
+/test - Group Quiz
+/ht - HTML Test
+/js - JSON Generator
+/leaderboard - Scores
 
-👑 Owner System Enabled
-
-🚀 Send /test or /ht to begin
+🚀 Ready!
 """)
 
 # =====================
@@ -41,7 +61,7 @@ def test_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    bot.send_message(message.chat.id, "📩 Send JSON file for quiz system")
+    bot.send_message(message.chat.id, "📩 Send JSON file")
 
 # =====================
 # HT COMMAND
@@ -51,10 +71,10 @@ def ht_cmd(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    bot.send_message(message.chat.id, "📩 Send JSON file for HTML test generation")
+    bot.send_message(message.chat.id, "📩 Send JSON for HTML")
 
 # =====================
-# JSON HANDLER
+# JSON LOAD FOR QUIZ
 # =====================
 @bot.message_handler(content_types=['document'])
 def handle_json(message):
@@ -72,18 +92,17 @@ def handle_json(message):
         bot.reply_to(message, "❌ Invalid JSON")
         return
 
-    bot.send_message(message.chat.id, "📌 JSON loaded successfully!\n👉 Now send Group ID like -100xxxx")
+    bot.send_message(message.chat.id, "✅ JSON Loaded!\nNow send Group ID")
 
 # =====================
-# GROUP ID SET + START QUIZ
+# GROUP SET
 # =====================
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("-100"))
 def set_group(message):
-    global active_group_id
+    global active_group
 
-    active_group_id = message.text
-
-    bot.send_message(message.chat.id, "🚀 Starting quiz in group...")
+    active_group = message.text
+    bot.send_message(message.chat.id, "🚀 Starting quiz...")
     send_question(0)
 
 # =====================
@@ -91,7 +110,7 @@ def set_group(message):
 # =====================
 def send_question(index):
     if index >= len(questions):
-        bot.send_message(active_group_id, "🏁 Quiz Finished!")
+        bot.send_message(active_group, "🏁 Quiz Finished!")
         return
 
     q = questions[index]
@@ -108,13 +127,13 @@ def send_question(index):
             )
         )
 
-    bot.send_message(active_group_id, text, reply_markup=markup)
+    bot.send_message(active_group, text, reply_markup=markup)
 
 # =====================
 # ANSWER CHECK
 # =====================
 @bot.callback_query_handler(func=lambda call: True)
-def check_answer(call):
+def answer(call):
     global questions
 
     index, selected = call.data.split("|")
@@ -122,18 +141,17 @@ def check_answer(call):
 
     correct = questions[index]['answer']
 
-    user_id = call.from_user.id
+    user = call.from_user.id
 
-    if user_id not in user_scores:
-        user_scores[user_id] = 0
+    if user not in scores:
+        scores[user] = 0
 
     if selected == correct:
-        user_scores[user_id] += 1
+        scores[user] += 1
         bot.answer_callback_query(call.id, "✔ Correct")
     else:
         bot.answer_callback_query(call.id, f"❌ Wrong | Ans: {correct}")
 
-    # next question
     send_question(index + 1)
 
 # =====================
@@ -141,103 +159,90 @@ def check_answer(call):
 # =====================
 @bot.message_handler(commands=['leaderboard'])
 def leaderboard(message):
-    if not user_scores:
+
+    if not scores:
         bot.send_message(message.chat.id, "No scores yet")
         return
 
     text = "🏆 LEADERBOARD\n\n"
 
-    sorted_users = sorted(user_scores.items(), key=lambda x: x[1], reverse=True)
-
-    rank = 1
-    for uid, score in sorted_users:
-        text += f"{rank}. User {uid} - {score}\n"
-        rank += 1
+    for i, (u, s) in enumerate(sorted(scores.items(), key=lambda x: x[1], reverse=True), 1):
+        text += f"{i}. User {u} - {s}\n"
 
     bot.send_message(message.chat.id, text)
 
 # =====================
-# HTML GENERATOR
+# /JS COMMAND START
 # =====================
-def generate_html(data):
-    import json
-
-    return f"""
-<!DOCTYPE html>
-<html>
-<head>
-<title>Quiz Test</title>
-<style>
-body {{ font-family: Arial; padding: 20px; }}
-.card {{ border:1px solid #ddd; padding:15px; margin:10px; }}
-button {{ padding:10px; margin:5px; }}
-</style>
-</head>
-<body>
-
-<h2>📘 Online Test</h2>
-<div id="quiz"></div>
-
-<script>
-const questions = {json.dumps(data)};
-
-let index = 0;
-let score = 0;
-
-function loadQ(){{
-    if(index >= questions.length){{
-        document.getElementById("quiz").innerHTML =
-        "<h2>Result: " + score + "/" + questions.length + "</h2>";
-        return;
-    }}
-
-    let q = questions[index];
-    let html = `<div class='card'>
-    <h3>Q${{q.question_number}}</h3>
-    <p>${{q.question}}</p>`;
-
-    q.options.forEach(opt => {{
-        html += `<button onclick="check('${{opt}}','${{q.answer}}')">${{opt}}</button><br>`;
-    }});
-
-    html += "</div>";
-
-    document.getElementById("quiz").innerHTML = html;
-}}
-
-function check(sel, ans){{
-    if(sel === ans) score++;
-    index++;
-    loadQ();
-}}
-
-loadQ();
-</script>
-
-</body>
-</html>
-"""
-
-# =====================
-# HT JSON HANDLER
-# =====================
-@bot.message_handler(content_types=['document'])
-def html_json(message):
+@bot.message_handler(commands=['js'])
+def js_start(message):
     if message.from_user.id != OWNER_ID:
         return
 
-    file = bot.get_file(message.document.file_id)
-    data = json.loads(bot.download_file(file.file_path))
+    js_buffer[message.from_user.id] = []
 
-    html = generate_html(data)
+    bot.send_message(message.chat.id,
+        "📩 Send your data line by line.\nThen type /done to get JSON file.")
 
-    with open("test.html", "w", encoding="utf-8") as f:
-        f.write(html)
+# =====================
+# COLLECT TEXT
+# =====================
+@bot.message_handler(func=lambda m: True)
+def collect_js(message):
+    if message.from_user.id != OWNER_ID:
+        return
 
-    bot.send_document(message.chat.id, open("test.html", "rb"))
+    if message.from_user.id in js_buffer:
+
+        if message.text.startswith("/"):
+            return
+
+        js_buffer[message.from_user.id].append(message.text)
+
+# =====================
+# /DONE → CREATE JSON FILE
+# =====================
+@bot.message_handler(commands=['done'])
+def done(message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    data_list = js_buffer.get(message.from_user.id, [])
+
+    if not data_list:
+        bot.send_message(message.chat.id, "❌ No data found")
+        return
+
+    result = []
+
+    for i, line in enumerate(data_list, 1):
+        result.append({
+            "id": i,
+            "data": line
+        })
+
+    filename = "output.json"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=4)
+
+    bot.send_document(message.chat.id, open(filename, "rb"))
+
+    js_buffer[message.from_user.id] = []
 
 # =====================
 # RUN BOT
 # =====================
-print("Bot is running...")
-bot.infinity_polling()
+def run_bot():
+    print("Bot Running...")
+    bot.infinity_polling(skip_pending=True)
+
+# =====================
+# START BOTH
+# =====================
+if __name__ == "__main__":
+
+    t1 = threading.Thread(target=run_flask)
+    t1.start()
+
+    run_bot()
