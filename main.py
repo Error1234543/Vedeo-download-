@@ -1,7 +1,6 @@
 import telebot
 import json
 import os
-import time
 from flask import Flask, request
 
 # =====================
@@ -14,12 +13,13 @@ OWNER_ID = 8226637107
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # =====================
-# DATA STORAGE
+# STORAGE
 # =====================
 questions = []
 scores = {}
 js_buffer = {}
 user_state = {}
+active_group = None
 
 # =====================
 # FLASK
@@ -45,14 +45,14 @@ def start(message):
 """
 🔥 PRO EXAM BOT
 
-/test → Telegram quiz
-/ht → HTML exam
-/js → JSON builder
-/leaderboard → scores
+/test → Telegram Quiz
+/ht → HTML Exam
+/js → JSON Builder
+/leaderboard → Scores
 """)
 
 # =====================
-# /test (TELEGRAM QUIZ MODE)
+# /test FLOW FIXED
 # =====================
 @bot.message_handler(commands=['test'])
 def test_cmd(message):
@@ -63,7 +63,7 @@ def test_cmd(message):
     bot.send_message(message.chat.id, "📩 Send Quiz JSON file")
 
 # =====================
-# /ht (HTML MODE)
+# /ht HTML MODE
 # =====================
 @bot.message_handler(commands=['ht'])
 def ht_cmd(message):
@@ -74,7 +74,7 @@ def ht_cmd(message):
     bot.send_message(message.chat.id, "📩 Send JSON for HTML exam")
 
 # =====================
-# /js (TEXT TO JSON)
+# /js MODE
 # =====================
 @bot.message_handler(commands=['js'])
 def js_cmd(message):
@@ -86,7 +86,7 @@ def js_cmd(message):
     bot.send_message(message.chat.id, "📩 Send text lines then /done")
 
 # =====================
-# /done
+# /done JSON EXPORT
 # =====================
 @bot.message_handler(commands=['done'])
 def done(message):
@@ -103,15 +103,23 @@ def done(message):
     bot.send_document(message.chat.id, open("output.json", "rb"))
 
 # =====================
-# TEXT COLLECTOR
+# TEXT COLLECTOR (JS MODE)
 # =====================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def collect(message):
     if message.from_user.id in js_buffer:
         js_buffer[message.from_user.id].append(message.text)
 
+    # GROUP ID for quiz
+    global active_group
+
+    if message.text.startswith("-100") and user_state.get(message.from_user.id) == "quiz":
+        active_group = message.text
+        bot.send_message(message.chat.id, "🚀 Starting Quiz in Group...")
+        send_quiz(0)
+
 # =====================
-# DOCUMENT HANDLER (MAIN LOGIC FIXED)
+# DOCUMENT HANDLER (FIXED FLOW)
 # =====================
 @bot.message_handler(content_types=['document'])
 def handle_doc(message):
@@ -134,7 +142,7 @@ def handle_doc(message):
     # ================= QUIZ =================
     if mode == "quiz":
         questions = parsed
-        bot.send_message(message.chat.id, "✅ Quiz Loaded Successfully")
+        bot.send_message(message.chat.id, "✅ Quiz Loaded. Now send GROUP ID (-100...)")
 
     # ================= HTML =================
     elif mode == "html":
@@ -148,9 +156,34 @@ def handle_doc(message):
     user_state[message.from_user.id] = None
 
 # =====================
-# 🔥 PRO HTML (WITH TIMER + RESULT + REVIEW)
+# QUIZ SENDER (FIXED)
+# =====================
+def send_quiz(index):
+    global questions, active_group
+
+    if index >= len(questions):
+        bot.send_message(active_group, "🏁 Quiz Finished")
+        return
+
+    q = questions[index]
+
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    for opt in q["options"]:
+        markup.add(opt)
+
+    bot.send_message(
+        active_group,
+        f"❓ Q{index+1}\n{q['question']}",
+        reply_markup=markup
+    )
+
+# =====================
+# PRO HTML (FIXED + CLEAN UI)
 # =====================
 def generate_html(data):
+
+    import json
 
     return f"""
 <!DOCTYPE html>
@@ -193,7 +226,6 @@ body {{
     background: red;
     padding: 10px;
     border-radius: 8px;
-    font-weight: bold;
 }}
 </style>
 </head>
@@ -201,7 +233,7 @@ body {{
 <body>
 
 <div id="timer">⏳ 30</div>
-<h2>🔥 PRO ONLINE EXAM</h2>
+<h2>🔥 ONLINE EXAM</h2>
 
 <div id="quiz"></div>
 
@@ -209,7 +241,7 @@ body {{
 let questions = {json.dumps(data)};
 let index = 0;
 let score = 0;
-let wrongList = [];
+let wrong = [];
 let time = 30;
 
 function load() {{
@@ -233,11 +265,7 @@ function check(ans) {{
     if(ans === correct) {{
         score++;
     }} else {{
-        wrongList.push({{
-            q: questions[index].question,
-            your: ans,
-            correct: correct
-        }});
+        wrong.push({{q: questions[index].question, your: ans, correct}});
     }}
 
     index++;
@@ -246,20 +274,20 @@ function check(ans) {{
         load();
         time = 30;
     }} else {{
-        showResult();
+        result();
     }}
 }}
 
-function showResult() {{
+function result() {{
     let html = `<h2>🏁 RESULT</h2>
     <h3>Score: ${{score}} / ${{questions.length}}</h3>
-    <h3>Wrong Answers: ${{wrongList.length}}</h3>`;
+    <h3>Wrong: ${{wrong.length}}</h3>`;
 
-    wrongList.forEach(w => {{
+    wrong.forEach(w => {{
         html += `<div class="card">
-            <b>Q:</b> ${{w.q}}<br>
-            <b>Your:</b> ${{w.your}}<br>
-            <b>Correct:</b> ${{w.correct}}
+        <b>Q:</b> ${{w.q}}<br>
+        <b>Your:</b> ${{w.your}}<br>
+        <b>Correct:</b> ${{w.correct}}
         </div>`;
     }});
 
@@ -273,12 +301,8 @@ setInterval(() => {{
     if(time <= 0) {{
         index++;
         time = 30;
-
-        if(index < questions.length) {{
-            load();
-        }} else {{
-            showResult();
-        }}
+        if(index < questions.length) load();
+        else result();
     }}
 }},1000);
 
@@ -307,14 +331,11 @@ def leaderboard(message):
     bot.send_message(message.chat.id, text)
 
 # =====================
-# WEBHOOK
+# RUN
 # =====================
-def set_webhook():
+def run():
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
-
-def run():
-    set_webhook()
     app.run(host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
